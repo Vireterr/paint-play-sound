@@ -125,13 +125,6 @@ function buildNotes(pts: Pt[]): NotePt[] {
   return notes;
 }
 
-// Вычисление частоты из Y-координаты
-function freqFromY(y: number, h: number): number {
-  const idx = Math.round((1 - y / h) * (SCALE.length - 1));
-  const semitone = SCALE[Math.max(0, Math.min(SCALE.length - 1, idx))] ?? 0;
-  return 174.61 * Math.pow(2, semitone / 12);
-}
-
 function Index() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const strokesRef = useRef<Stroke[]>([]);
@@ -144,7 +137,6 @@ function Index() {
   const flashRef = useRef<Map<string, number>>(new Map());
   const dragRef = useRef<{ si: number; ni: number } | null>(null);
   const hoverRef = useRef<{ si: number; ni: number } | null>(null);
-  const activeVoicesRef = useRef<Map<string, { osc: OscillatorNode | AudioBufferSourceNode; gain: GainNode; endTime: number }>>(new Map());
 
   const audioRef = useRef<AudioContext | null>(null);
   const masterRef = useRef<GainNode | null>(null);
@@ -194,35 +186,21 @@ function Index() {
     return audioRef.current;
   }, []);
 
-  // Плавное воспроизведение линии как одного непрерывного звука
-  const playStrokeSmooth = useCallback(
-    (stroke: Stroke, preset: SoundPreset) => {
+  const playNote = useCallback(
+    (n: Omit<NotePt, "pi">, preset: SoundPreset, silentLabel = false) => {
       const ctx = ensureAudio();
       const master = masterRef.current;
       const canvas = canvasRef.current;
-      if (!master || !canvas || stroke.pts.length < 2) return;
+      if (!master || !canvas) return;
 
       const w = canvas.clientWidth;
       const h = canvas.clientHeight;
+      const idx = Math.round((1 - n.y / h) * (SCALE.length - 1));
+      const semitone = SCALE[Math.max(0, Math.min(SCALE.length - 1, idx))] ?? 0;
+      const freq = 174.61 * Math.pow(2, semitone / 12);
+      const dur = Math.min(2.2, 0.18 + (n.len / Math.max(w, 1)) * 3.2);
       const now = ctx.currentTime;
 
-      // Вычисляем общую длину линии
-      let totalLen = 0;
-      for (let i = 1; i < stroke.pts.length; i++) {
-        const a = stroke.pts[i - 1]!;
-        const b = stroke.pts[i]!;
-        totalLen += Math.hypot(b.x - a.x, b.y - a.y);
-      }
-
-      // Длительность звука зависит от длины линии и скорости playhead
-      const speed = w / loopSecRef.current; // пикселей в секунду
-      const duration = Math.max(0.1, totalLen / speed);
-
-      // Начальная и конечная частоты
-      const startFreq = freqFromY(stroke.pts[0]!.y, h);
-      const endFreq = freqFromY(stroke.pts[stroke.pts.length - 1]!.y, h);
-
-      // Создаём источник звука
       let sourceNode: AudioNode;
       if (preset.oscType === "noise") {
         const noise = ctx.createBufferSource();
@@ -230,60 +208,43 @@ function Index() {
         noise.loop = true;
         sourceNode = noise;
         noise.start(now);
-        noise.stop(now + duration + 0.1);
+        noise.stop(now + dur + 0.05);
       } else if (preset.oscType === "pulse") {
         const osc = ctx.createOscillator();
         osc.setPeriodicWave(createPulseWave(ctx, preset.pulseWidth));
-        osc.frequency.setValueAtTime(startFreq, now);
-        // Плавное изменение частоты вдоль линии
-        if (Math.abs(endFreq - startFreq) > 1) {
-          osc.frequency.linearRampToValueAtTime(endFreq, now + duration);
-        }
+        osc.frequency.setValueAtTime(freq, now);
         sourceNode = osc;
         osc.start(now);
-        osc.stop(now + duration + 0.1);
+        osc.stop(now + dur + 0.05);
       } else {
         const osc = ctx.createOscillator();
         osc.type = preset.oscType as OscillatorType;
-        osc.frequency.setValueAtTime(startFreq, now);
-        // Плавное изменение частоты (glissando)
-        if (Math.abs(endFreq - startFreq) > 1) {
-          osc.frequency.linearRampToValueAtTime(endFreq, now + duration);
-        }
+        osc.frequency.setValueAtTime(freq, now);
         sourceNode = osc;
         osc.start(now);
-        osc.stop(now + duration + 0.1);
+        osc.stop(now + dur + 0.05);
       }
 
-      // Фильтр
       const filter = ctx.createBiquadFilter();
       filter.type = "lowpass";
       filter.frequency.setValueAtTime(preset.filterFreq, now);
       filter.Q.value = preset.filterQ;
 
-      // Дисторшн
       const distortion = ctx.createWaveShaper();
       if (preset.distortion > 0) {
         distortion.curve = makeDistortionCurve(preset.distortion);
         distortion.oversample = "4x";
       }
 
-      // Плавная огибающая (attack-sustain-release)
       const gain = ctx.createGain();
-      const peak = preset.volume * 0.8;
-      const attackTime = 0.05;
-      const releaseTime = Math.min(0.3, duration * 0.3);
+      const peak = preset.volume * (0.5 + Math.min(0.5, n.len / 1600));
       gain.gain.setValueAtTime(0.0001, now);
-      gain.gain.exponentialRampToValueAtTime(peak, now + attackTime);
-      gain.gain.setValueAtTime(peak, now + duration - releaseTime);
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+      gain.gain.exponentialRampToValueAtTime(peak, now + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
 
-      // Pan (среднее значение X линии)
-      const avgX = stroke.pts.reduce((sum, p) => sum + p.x, 0) / stroke.pts.length;
       const pan = ctx.createStereoPanner();
-      pan.pan.value = Math.max(-1, Math.min(1, (avgX / Math.max(w, 1)) * 2 - 1));
+      pan.pan.value = Math.max(-1, Math.min(1, (n.x / Math.max(w, 1)) * 2 - 1));
 
-      // Delay
       let delayNode: DelayNode | null = null;
       let feedbackNode: GainNode | null = null;
       if (preset.delayTime > 0 && preset.delayFeedback > 0) {
@@ -295,7 +256,6 @@ function Index() {
         feedbackNode.connect(delayNode);
       }
 
-      // Цепочка
       sourceNode.connect(filter);
       if (preset.distortion > 0) {
         filter.connect(distortion);
@@ -311,18 +271,8 @@ function Index() {
         delayNode.connect(master);
       }
 
-      // Сохраняем голос для возможности остановки
-      const voiceId = `stroke-${strokesRef.current.indexOf(stroke)}`;
-      activeVoicesRef.current.set(voiceId, {
-        osc: sourceNode as OscillatorNode,
-        gain,
-        endTime: now + duration,
-      });
-
-      // Очищаем после завершения
-      setTimeout(() => {
-        activeVoicesRef.current.delete(voiceId);
-      }, duration * 1000 + 100);
+      if (!silentLabel)
+        setLast(`${NOTE_NAMES[(3 + semitone) % 12]} · ${dur.toFixed(2)} с · ${preset.name}`);
     },
     [ensureAudio],
   );
@@ -394,23 +344,19 @@ function Index() {
       }
       playheadRef.current = x;
 
-      // Воспроизведение линий
       if (playingRef.current) {
         const wrapped = x < prevX;
         for (let si = 0; si < strokesRef.current.length; si++) {
           const s = strokesRef.current[si]!;
           const preset = presetsRef.current.find(p => p.id === s.presetId);
           if (!preset) continue;
-
-          // Проверяем, пересекает ли playhead начало линии
-          const startX = s.pts[0]!.x;
-          const hit = wrapped
-            ? startX >= prevX || startX < x
-            : startX >= prevX && startX < x;
-
-          if (hit) {
-            playStrokeSmooth(s, preset);
-            flashRef.current.set(`stroke-${si}`, time);
+          for (let ni = 0; ni < s.notes.length; ni++) {
+            const n = s.notes[ni]!;
+            const hit = wrapped ? n.x >= prevX || n.x < x : n.x >= prevX && n.x < x;
+            if (hit) {
+              playNote(n, preset, true);
+              flashRef.current.set(`${si}:${ni}`, time);
+            }
           }
         }
       }
@@ -418,23 +364,21 @@ function Index() {
       for (const s of strokesRef.current) drawStrokePixelated(s);
       if (currentRef.current) drawStrokePixelated(currentRef.current);
 
-      // Вспышки
       for (const [key, t] of flashRef.current) {
         const age = (time - t) / 450;
         if (age >= 1) { flashRef.current.delete(key); continue; }
-        const si = Number(key.split("-")[1]);
-        const s = strokesRef.current[si];
-        if (!s || s.pts.length === 0) continue;
-        const preset = presetsRef.current.find(p => p.id === s.presetId);
+        const [siStr, niStr] = key.split(":");
+        const s = strokesRef.current[Number(siStr)];
+        const n = s?.notes[Number(niStr)];
+        if (!n) continue;
+        const preset = presetsRef.current.find(p => p.id === s!.presetId);
         if (!preset) continue;
-        const p = s.pts[0]!;
         ctx.fillStyle = `oklch(0.95 0.15 ${preset.hue} / ${1 - age})`;
         ctx.beginPath();
-        ctx.arc(p.x, p.y, 4 + 14 * age, 0, Math.PI * 2);
+        ctx.arc(n.x, n.y, 4 + 14 * age, 0, Math.PI * 2);
         ctx.fill();
       }
 
-      // Режим редактирования
       if (modeRef.current === "edit") {
         for (let si = 0; si < strokesRef.current.length; si++) {
           const s = strokesRef.current[si]!;
@@ -469,7 +413,7 @@ function Index() {
       cancelAnimationFrame(raf);
       window.removeEventListener("resize", resize);
     };
-  }, [playStrokeSmooth]);
+  }, [playNote]);
 
   const pos = (e: React.PointerEvent<HTMLCanvasElement>): Pt => {
     const r = e.currentTarget.getBoundingClientRect();
@@ -487,6 +431,17 @@ function Index() {
     return null;
   };
 
+  const describe = (n: NotePt, preset: SoundPreset) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const h = canvas.clientHeight;
+    const w = canvas.clientWidth;
+    const idx = Math.round((1 - n.y / h) * (SCALE.length - 1));
+    const semitone = SCALE[Math.max(0, Math.min(SCALE.length - 1, idx))] ?? 0;
+    const dur = Math.min(2.2, 0.18 + (n.len / Math.max(w, 1)) * 3.2);
+    setLast(`${NOTE_NAMES[(3 + semitone) % 12]} · ${dur.toFixed(2)} с · ${preset.name}`);
+  };
+
   const onDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     e.currentTarget.setPointerCapture(e.pointerId);
     ensureAudio();
@@ -494,6 +449,14 @@ function Index() {
     if (mode === "edit") {
       const hit = findHandle(p);
       dragRef.current = hit;
+      if (hit) {
+        const s = strokesRef.current[hit.si]!;
+        const preset = presetsRef.current.find(pr => pr.id === s.presetId);
+        if (!preset) return;
+        const n = s.notes[hit.ni]!;
+        describe(n, preset);
+        playNote(n, preset);
+      }
       return;
     }
     currentRef.current = { pts: [p], presetId: currentPresetId, notes: [] };
@@ -506,7 +469,8 @@ function Index() {
       const drag = dragRef.current;
       if (!drag) { hoverRef.current = findHandle(p); return; }
       const s = strokesRef.current[drag.si];
-      if (!s) return;
+      const preset = presetsRef.current.find(pr => pr.id === s?.presetId);
+      if (!s || !preset) return;
       const n = s.notes[drag.ni];
       if (!n) return;
       const anchor = s.pts[n.pi]!;
@@ -521,19 +485,36 @@ function Index() {
         pt.y += dy * f;
       }
       refreshNotes(s);
+      describe(n, preset);
       return;
     }
     const cur = currentRef.current;
     if (!cur) return;
     cur.pts.push(p);
     const anchor = lastSoundPtRef.current;
+    const preset = presetsRef.current.find(pr => pr.id === cur.presetId);
+    if (!preset) return;
     if (anchor && Math.hypot(p.x - anchor.x, p.y - anchor.y) > NOTE_SPACING) {
+      playNote({
+        x: p.x, y: p.y,
+        angle: (Math.atan2(-(p.y - anchor.y), p.x - anchor.x) * 180) / Math.PI,
+        len: Math.hypot(p.x - anchor.x, p.y - anchor.y),
+      }, preset);
       lastSoundPtRef.current = p;
     }
   };
 
   const onUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (mode === "edit") {
+      const drag = dragRef.current;
+      if (drag) {
+        const s = strokesRef.current[drag.si];
+        const preset = presetsRef.current.find(pr => pr.id === s?.presetId);
+        if (s && preset) {
+          const n = s.notes[drag.ni];
+          if (n) playNote(n, preset);
+        }
+      }
       dragRef.current = null;
       return;
     }
@@ -648,7 +629,7 @@ function Index() {
           <div>
             <h1 className="text-3xl font-semibold tracking-tight">Линиофон</h1>
             <p className="mt-1 text-sm text-muted-foreground">
-              Рисуйте свободные линии — они звучат плавно, как смычок по струне.
+              Рисуйте свободные линии — они остаются на холсте и звучат по кругу.
               Каждый цвет имеет свой звук.
             </p>
           </div>
@@ -658,7 +639,6 @@ function Index() {
           </div>
         </header>
 
-        {/* ПАНЕЛЬ ЦВЕТОВ И НАСТРОЕК */}
         <div className="rounded-xl border border-border bg-card p-4 shadow-lg">
           <div className="flex flex-wrap items-center gap-4">
             <div className="flex flex-col gap-1">
@@ -786,7 +766,6 @@ function Index() {
           )}
         </div>
 
-        {/* Панель управления */}
         <div className="flex flex-wrap items-center gap-2">
           <div className="inline-flex overflow-hidden rounded-md border border-border">
             <button onClick={() => setMode("draw")} className={`px-4 py-2 text-sm font-medium transition-colors ${mode === "draw" ? "bg-primary text-primary-foreground" : "bg-card text-card-foreground hover:bg-accent"}`}>Рисование</button>
@@ -822,9 +801,9 @@ function Index() {
         />
 
         <footer className="flex flex-wrap gap-4 text-xs text-muted-foreground">
-          <span>Плавный звук вдоль линии</span>
-          <span>Каждый цвет = свой тембр</span>
+          <span>Каждый цвет = свой звук</span>
           <span>Пиксельные линии</span>
+          <span>Тембры: синус, треугольник, пила, квадрат, pulse, шум</span>
         </footer>
       </div>
     </main>
