@@ -8,13 +8,13 @@ export const Route = createFileRoute("/")({
       {
         name: "description",
         content:
-          "Интерактивный холст: свободный рисунок звучит зацикленно. Позиция задаёт ноту, длина — длительность, угол — тембр. Запись видео и аудио.",
+          "Интерактивный холст: свободный рисунок звучит зацикленно, точки можно перетаскивать и менять ноту, длительность и тембр. Запись видео и аудио.",
       },
       { property: "og:title", content: "Линиофон — рисуй линии, слышь музыку" },
       {
         property: "og:description",
         content:
-          "Рисуйте свободные линии, слушайте бесконечный луп и сохраняйте результат видео- или аудиофайлом.",
+          "Рисуйте линии, перетаскивайте точки для настройки звука и сохраняйте результат видео- или аудиофайлом.",
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
@@ -24,12 +24,13 @@ export const Route = createFileRoute("/")({
 });
 
 type Pt = { x: number; y: number };
-type NotePt = { x: number; y: number; angle: number; len: number };
+type NotePt = { pi: number; x: number; y: number; angle: number; len: number };
 type Stroke = { pts: Pt[]; hue: number; notes: NotePt[] };
 
 const SCALE = [0, 2, 3, 5, 7, 9, 10, 12, 14, 15, 17, 19, 21, 22, 24];
 const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 const NOTE_SPACING = 38;
+const HANDLE_R = 9;
 
 function timbreFor(angleDeg: number): { type: OscillatorType; hue: number } {
   const a = ((angleDeg % 180) + 180) % 180;
@@ -39,16 +40,36 @@ function timbreFor(angleDeg: number): { type: OscillatorType; hue: number } {
   return { type: "square", hue: 320 };
 }
 
+function refreshNotes(s: Stroke) {
+  let prevIdx = 0;
+  for (const n of s.notes) {
+    const p = s.pts[n.pi];
+    if (!p) continue;
+    n.x = p.x;
+    n.y = p.y;
+    let len = 0;
+    for (let i = prevIdx + 1; i <= n.pi; i++) {
+      const a = s.pts[i - 1]!;
+      const b = s.pts[i]!;
+      len += Math.hypot(b.x - a.x, b.y - a.y);
+    }
+    n.len = Math.max(8, len);
+    const a = s.pts[Math.max(0, n.pi - 1)]!;
+    n.angle = (Math.atan2(-(p.y - a.y), p.x - a.x) * 180) / Math.PI;
+    prevIdx = n.pi;
+  }
+}
+
 function buildNotes(pts: Pt[]): NotePt[] {
   const notes: NotePt[] = [];
   let acc = 0;
   for (let i = 1; i < pts.length; i++) {
     const a = pts[i - 1]!;
     const b = pts[i]!;
-    const seg = Math.hypot(b.x - a.x, b.y - a.y);
-    acc += seg;
+    acc += Math.hypot(b.x - a.x, b.y - a.y);
     if (acc >= NOTE_SPACING || i === pts.length - 1) {
       notes.push({
+        pi: i,
         x: b.x,
         y: b.y,
         angle: (Math.atan2(-(b.y - a.y), b.x - a.x) * 180) / Math.PI,
@@ -68,7 +89,10 @@ function Index() {
   const playheadRef = useRef(0);
   const playingRef = useRef(true);
   const loopSecRef = useRef(6);
+  const modeRef = useRef<"draw" | "edit">("draw");
   const flashRef = useRef<Map<string, number>>(new Map());
+  const dragRef = useRef<{ si: number; ni: number } | null>(null);
+  const hoverRef = useRef<{ si: number; ni: number } | null>(null);
 
   const audioRef = useRef<AudioContext | null>(null);
   const masterRef = useRef<GainNode | null>(null);
@@ -76,6 +100,7 @@ function Index() {
   const videoRecRef = useRef<MediaRecorder | null>(null);
   const audioRecRef = useRef<MediaRecorder | null>(null);
 
+  const [mode, setMode] = useState<"draw" | "edit">("draw");
   const [playing, setPlaying] = useState(true);
   const [loopSec, setLoopSec] = useState(6);
   const [last, setLast] = useState<string | null>(null);
@@ -92,6 +117,9 @@ function Index() {
   useEffect(() => {
     loopSecRef.current = loopSec;
   }, [loopSec]);
+  useEffect(() => {
+    modeRef.current = mode;
+  }, [mode]);
 
   const ensureAudio = useCallback(() => {
     if (!audioRef.current) {
@@ -125,7 +153,7 @@ function Index() {
   }, []);
 
   const playNote = useCallback(
-    (n: NotePt, silentLabel = false) => {
+    (n: Omit<NotePt, "pi">, silentLabel = false) => {
       const ctx = ensureAudio();
       const master = masterRef.current;
       const canvas = canvasRef.current;
@@ -226,7 +254,6 @@ function Index() {
         ctx.stroke();
       }
 
-      // playhead sweep
       const prevX = playheadRef.current;
       let x = prevX;
       if (playingRef.current) {
@@ -241,9 +268,7 @@ function Index() {
           const s = strokesRef.current[si]!;
           for (let ni = 0; ni < s.notes.length; ni++) {
             const n = s.notes[ni]!;
-            const hit = wrapped
-              ? n.x >= prevX || n.x < x
-              : n.x >= prevX && n.x < x;
+            const hit = wrapped ? n.x >= prevX || n.x < x : n.x >= prevX && n.x < x;
             if (hit) {
               playNote(n, true);
               flashRef.current.set(`${si}:${ni}`, time);
@@ -255,7 +280,6 @@ function Index() {
       for (const s of strokesRef.current) drawStroke(s);
       if (currentRef.current) drawStroke(currentRef.current);
 
-      // note flashes
       for (const [key, t] of flashRef.current) {
         const age = (time - t) / 450;
         if (age >= 1) {
@@ -272,7 +296,27 @@ function Index() {
         ctx.fill();
       }
 
-      // playhead line
+      if (modeRef.current === "edit") {
+        for (let si = 0; si < strokesRef.current.length; si++) {
+          const s = strokesRef.current[si]!;
+          for (let ni = 0; ni < s.notes.length; ni++) {
+            const n = s.notes[ni]!;
+            const active =
+              (dragRef.current?.si === si && dragRef.current?.ni === ni) ||
+              (hoverRef.current?.si === si && hoverRef.current?.ni === ni);
+            ctx.beginPath();
+            ctx.arc(n.x, n.y, active ? HANDLE_R + 3 : HANDLE_R, 0, Math.PI * 2);
+            ctx.fillStyle = active
+              ? "oklch(0.95 0.02 265 / 0.95)"
+              : "oklch(0.25 0.03 265 / 0.9)";
+            ctx.fill();
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = `oklch(0.85 0.18 ${timbreFor(n.angle).hue})`;
+            ctx.stroke();
+          }
+        }
+      }
+
       ctx.strokeStyle = "oklch(0.95 0.02 265 / 0.75)";
       ctx.lineWidth = 2;
       ctx.beginPath();
@@ -295,18 +339,81 @@ function Index() {
     return { x: e.clientX - r.left, y: e.clientY - r.top };
   };
 
+  const findHandle = (p: Pt) => {
+    for (let si = strokesRef.current.length - 1; si >= 0; si--) {
+      const s = strokesRef.current[si]!;
+      for (let ni = 0; ni < s.notes.length; ni++) {
+        const n = s.notes[ni]!;
+        if (Math.hypot(p.x - n.x, p.y - n.y) <= HANDLE_R + 6) return { si, ni };
+      }
+    }
+    return null;
+  };
+
+  const describe = (n: NotePt) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const h = canvas.clientHeight;
+    const w = canvas.clientWidth;
+    const idx = Math.round((1 - n.y / h) * (SCALE.length - 1));
+    const semitone = SCALE[Math.max(0, Math.min(SCALE.length - 1, idx))] ?? 0;
+    const dur = Math.min(2.2, 0.18 + (n.len / Math.max(w, 1)) * 3.2);
+    setLast(
+      `${NOTE_NAMES[(3 + semitone) % 12]} · ${dur.toFixed(2)} с · ${timbreFor(n.angle).type}`,
+    );
+  };
+
   const onDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     e.currentTarget.setPointerCapture(e.pointerId);
     ensureAudio();
     const p = pos(e);
+
+    if (mode === "edit") {
+      const hit = findHandle(p);
+      dragRef.current = hit;
+      if (hit) {
+        const n = strokesRef.current[hit.si]!.notes[hit.ni]!;
+        describe(n);
+        playNote(n);
+      }
+      return;
+    }
+
     currentRef.current = { pts: [p], hue: 190, notes: [] };
     lastSoundPtRef.current = p;
   };
 
   const onMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const p = pos(e);
+
+    if (mode === "edit") {
+      const drag = dragRef.current;
+      if (!drag) {
+        hoverRef.current = findHandle(p);
+        return;
+      }
+      const s = strokesRef.current[drag.si];
+      const n = s?.notes[drag.ni];
+      if (!s || !n) return;
+      const anchor = s.pts[n.pi]!;
+      const dx = p.x - anchor.x;
+      const dy = p.y - anchor.y;
+      const span = 6;
+      for (let i = -span; i <= span; i++) {
+        const pt = s.pts[n.pi + i];
+        if (!pt) continue;
+        const f = 1 - Math.abs(i) / (span + 1);
+        pt.x += dx * f;
+        pt.y += dy * f;
+      }
+      refreshNotes(s);
+      s.hue = timbreFor(n.angle).hue;
+      describe(n);
+      return;
+    }
+
     const cur = currentRef.current;
     if (!cur) return;
-    const p = pos(e);
     cur.pts.push(p);
     const anchor = lastSoundPtRef.current;
     if (anchor && Math.hypot(p.x - anchor.x, p.y - anchor.y) > NOTE_SPACING) {
@@ -321,6 +428,16 @@ function Index() {
   };
 
   const onUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (mode === "edit") {
+      const drag = dragRef.current;
+      if (drag) {
+        const n = strokesRef.current[drag.si]?.notes[drag.ni];
+        if (n) playNote(n);
+      }
+      dragRef.current = null;
+      return;
+    }
+
     const cur = currentRef.current;
     if (!cur) return;
     cur.pts.push(pos(e));
@@ -337,6 +454,8 @@ function Index() {
     strokesRef.current = [];
     currentRef.current = null;
     flashRef.current.clear();
+    dragRef.current = null;
+    hoverRef.current = null;
     setStrokeCount(0);
     setLast(null);
   };
@@ -451,8 +570,9 @@ function Index() {
           <div>
             <h1 className="text-3xl font-semibold tracking-tight">Линиофон</h1>
             <p className="mt-1 text-sm text-muted-foreground">
-              Рисуйте свободные линии — они остаются на холсте и звучат по кругу:
-              бегунок проходит слева направо и играет точки рисунка.
+              Рисуйте свободные линии — они остаются на холсте и звучат по кругу.
+              В режиме настройки перетаскивайте точки: вверх-вниз меняет ноту,
+              вбок — момент и длительность, наклон — тембр.
             </p>
           </div>
           <div className="text-right text-sm text-muted-foreground">
@@ -462,6 +582,28 @@ function Index() {
         </header>
 
         <div className="flex flex-wrap items-center gap-2">
+          <div className="inline-flex overflow-hidden rounded-md border border-border">
+            <button
+              onClick={() => setMode("draw")}
+              className={`px-4 py-2 text-sm font-medium transition-colors ${
+                mode === "draw"
+                  ? "bg-primary text-primary-foreground"
+                  : "bg-card text-card-foreground hover:bg-accent"
+              }`}
+            >
+              Рисование
+            </button>
+            <button
+              onClick={() => setMode("edit")}
+              className={`px-4 py-2 text-sm font-medium transition-colors ${
+                mode === "edit"
+                  ? "bg-primary text-primary-foreground"
+                  : "bg-card text-card-foreground hover:bg-accent"
+              }`}
+            >
+              Настройка звука
+            </button>
+          </div>
           <button
             onClick={() => {
               ensureAudio();
@@ -483,7 +625,10 @@ function Index() {
             />
             <span className="w-8 font-mono">{loopSec}с</span>
           </label>
-          <button onClick={recVideo ? stopVideo : startVideo} className={recVideo ? btnStop : btn}>
+          <button
+            onClick={recVideo ? stopVideo : startVideo}
+            className={recVideo ? btnStop : btn}
+          >
             {recVideo ? (
               <>
                 <span className="size-2 animate-pulse rounded-full bg-current" />
@@ -493,7 +638,10 @@ function Index() {
               "Записать видео"
             )}
           </button>
-          <button onClick={recAudio ? stopAudio : startAudio} className={recAudio ? btnStop : btn}>
+          <button
+            onClick={recAudio ? stopAudio : startAudio}
+            className={recAudio ? btnStop : btn}
+          >
             {recAudio ? (
               <>
                 <span className="size-2 animate-pulse rounded-full bg-current" />
@@ -526,7 +674,9 @@ function Index() {
           onPointerMove={onMove}
           onPointerUp={onUp}
           onPointerCancel={onUp}
-          className="h-[62vh] w-full touch-none rounded-xl border border-border shadow-lg"
+          className={`h-[62vh] w-full touch-none rounded-xl border border-border shadow-lg ${
+            mode === "edit" ? "cursor-grab" : "cursor-crosshair"
+          }`}
           aria-label="Холст для рисования звучащих линий"
         />
 
