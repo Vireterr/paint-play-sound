@@ -8,13 +8,13 @@ export const Route = createFileRoute("/")({
       {
         name: "description",
         content:
-          "Интерактивный холст: свободный рисунок мгновенно звучит. Позиция задаёт ноту, длина — длительность, угол — тембр. Запись в видеофайл.",
+          "Интерактивный холст: свободный рисунок звучит зацикленно. Позиция задаёт ноту, длина — длительность, угол — тембр. Запись видео и аудио.",
       },
       { property: "og:title", content: "Линиофон — рисуй линии, слышь музыку" },
       {
         property: "og:description",
         content:
-          "Рисуйте свободные линии, слушайте музыку и сохраняйте результат видеофайлом.",
+          "Рисуйте свободные линии, слушайте бесконечный луп и сохраняйте результат видео- или аудиофайлом.",
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
@@ -24,10 +24,12 @@ export const Route = createFileRoute("/")({
 });
 
 type Pt = { x: number; y: number };
-type Stroke = { pts: Pt[]; hue: number };
+type NotePt = { x: number; y: number; angle: number; len: number };
+type Stroke = { pts: Pt[]; hue: number; notes: NotePt[] };
 
 const SCALE = [0, 2, 3, 5, 7, 9, 10, 12, 14, 15, 17, 19, 21, 22, 24];
 const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+const NOTE_SPACING = 38;
 
 function timbreFor(angleDeg: number): { type: OscillatorType; hue: number } {
   const a = ((angleDeg % 180) + 180) % 180;
@@ -37,24 +39,59 @@ function timbreFor(angleDeg: number): { type: OscillatorType; hue: number } {
   return { type: "square", hue: 320 };
 }
 
+function buildNotes(pts: Pt[]): NotePt[] {
+  const notes: NotePt[] = [];
+  let acc = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1]!;
+    const b = pts[i]!;
+    const seg = Math.hypot(b.x - a.x, b.y - a.y);
+    acc += seg;
+    if (acc >= NOTE_SPACING || i === pts.length - 1) {
+      notes.push({
+        x: b.x,
+        y: b.y,
+        angle: (Math.atan2(-(b.y - a.y), b.x - a.x) * 180) / Math.PI,
+        len: acc,
+      });
+      acc = 0;
+    }
+  }
+  return notes;
+}
+
 function Index() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const strokesRef = useRef<Stroke[]>([]);
   const currentRef = useRef<Stroke | null>(null);
   const lastSoundPtRef = useRef<Pt | null>(null);
+  const playheadRef = useRef(0);
+  const playingRef = useRef(true);
+  const loopSecRef = useRef(6);
+  const flashRef = useRef<Map<string, number>>(new Map());
 
   const audioRef = useRef<AudioContext | null>(null);
   const masterRef = useRef<GainNode | null>(null);
   const recDestRef = useRef<MediaStreamAudioDestinationNode | null>(null);
-  const recorderRef = useRef<MediaRecorder | null>(null);
-  const chunksRef = useRef<Blob[]>([]);
+  const videoRecRef = useRef<MediaRecorder | null>(null);
+  const audioRecRef = useRef<MediaRecorder | null>(null);
 
-  const [notes, setNotes] = useState(0);
+  const [playing, setPlaying] = useState(true);
+  const [loopSec, setLoopSec] = useState(6);
   const [last, setLast] = useState<string | null>(null);
-  const [recording, setRecording] = useState(false);
-  const [fileUrl, setFileUrl] = useState<string | null>(null);
-  const [fileName, setFileName] = useState("liniofon.mp4");
+  const [strokeCount, setStrokeCount] = useState(0);
+  const [recVideo, setRecVideo] = useState(false);
+  const [recAudio, setRecAudio] = useState(false);
+  const [videoFile, setVideoFile] = useState<{ url: string; name: string } | null>(null);
+  const [audioFile, setAudioFile] = useState<{ url: string; name: string } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    playingRef.current = playing;
+  }, [playing]);
+  useEffect(() => {
+    loopSecRef.current = loopSec;
+  }, [loopSec]);
 
   const ensureAudio = useCallback(() => {
     if (!audioRef.current) {
@@ -64,11 +101,11 @@ function Index() {
           .webkitAudioContext;
       const ctx = new AC();
       const master = ctx.createGain();
-      master.gain.value = 0.3;
+      master.gain.value = 0.28;
       const delay = ctx.createDelay(1.5);
       delay.delayTime.value = 0.26;
       const fb = ctx.createGain();
-      fb.gain.value = 0.3;
+      fb.gain.value = 0.28;
       delay.connect(fb);
       fb.connect(delay);
 
@@ -87,8 +124,8 @@ function Index() {
     return audioRef.current;
   }, []);
 
-  const playSegment = useCallback(
-    (a: Pt, b: Pt) => {
+  const playNote = useCallback(
+    (n: NotePt, silentLabel = false) => {
       const ctx = ensureAudio();
       const master = masterRef.current;
       const canvas = canvasRef.current;
@@ -96,17 +133,12 @@ function Index() {
 
       const w = canvas.clientWidth;
       const h = canvas.clientHeight;
-      const dx = b.x - a.x;
-      const dy = b.y - a.y;
-      const len = Math.hypot(dx, dy);
-      const angle = (Math.atan2(-dy, dx) * 180) / Math.PI;
-      const { type, hue } = timbreFor(angle);
+      const { type, hue } = timbreFor(n.angle);
 
-      const midY = (a.y + b.y) / 2;
-      const idx = Math.round((1 - midY / h) * (SCALE.length - 1));
+      const idx = Math.round((1 - n.y / h) * (SCALE.length - 1));
       const semitone = SCALE[Math.max(0, Math.min(SCALE.length - 1, idx))] ?? 0;
       const freq = 174.61 * Math.pow(2, semitone / 12);
-      const dur = Math.min(2.4, 0.18 + (len / Math.max(w, 1)) * 3.2);
+      const dur = Math.min(2.2, 0.18 + (n.len / Math.max(w, 1)) * 3.2);
 
       const now = ctx.currentTime;
       const osc = ctx.createOscillator();
@@ -115,27 +147,24 @@ function Index() {
 
       const filter = ctx.createBiquadFilter();
       filter.type = "lowpass";
-      filter.frequency.setValueAtTime(800 + Math.abs(angle) * 40, now);
+      filter.frequency.setValueAtTime(800 + Math.abs(n.angle) * 40, now);
       filter.Q.value = 3;
 
       const gain = ctx.createGain();
-      const peak = 0.08 + Math.min(0.16, len / 1600);
+      const peak = 0.07 + Math.min(0.13, n.len / 1600);
       gain.gain.setValueAtTime(0.0001, now);
       gain.gain.exponentialRampToValueAtTime(peak, now + 0.02);
       gain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
 
       const pan = ctx.createStereoPanner();
-      pan.pan.value = Math.max(
-        -1,
-        Math.min(1, (((a.x + b.x) / 2) / Math.max(w, 1)) * 2 - 1),
-      );
+      pan.pan.value = Math.max(-1, Math.min(1, (n.x / Math.max(w, 1)) * 2 - 1));
 
       osc.connect(filter).connect(gain).connect(pan).connect(master);
       osc.start(now);
       osc.stop(now + dur + 0.05);
 
-      setLast(`${NOTE_NAMES[(3 + semitone) % 12]} · ${dur.toFixed(2)} с · ${type}`);
-      setNotes((n) => n + 1);
+      if (!silentLabel)
+        setLast(`${NOTE_NAMES[(3 + semitone) % 12]} · ${dur.toFixed(2)} с · ${type}`);
       return hue;
     },
     [ensureAudio],
@@ -148,6 +177,8 @@ function Index() {
     if (!ctx) return;
 
     let raf = 0;
+    let prevTime = performance.now();
+
     const resize = () => {
       const dpr = window.devicePixelRatio || 1;
       canvas.width = canvas.clientWidth * dpr;
@@ -176,9 +207,12 @@ function Index() {
       ctx.shadowBlur = 0;
     };
 
-    const render = () => {
+    const render = (time: number) => {
+      const dt = Math.min(0.1, (time - prevTime) / 1000);
+      prevTime = time;
       const w = canvas.clientWidth;
       const h = canvas.clientHeight;
+
       ctx.fillStyle = "oklch(0.19 0.03 265)";
       ctx.fillRect(0, 0, w, h);
 
@@ -192,8 +226,59 @@ function Index() {
         ctx.stroke();
       }
 
+      // playhead sweep
+      const prevX = playheadRef.current;
+      let x = prevX;
+      if (playingRef.current) {
+        x = prevX + (w / loopSecRef.current) * dt;
+        if (x >= w) x -= w;
+      }
+      playheadRef.current = x;
+
+      if (playingRef.current) {
+        const wrapped = x < prevX;
+        for (let si = 0; si < strokesRef.current.length; si++) {
+          const s = strokesRef.current[si]!;
+          for (let ni = 0; ni < s.notes.length; ni++) {
+            const n = s.notes[ni]!;
+            const hit = wrapped
+              ? n.x >= prevX || n.x < x
+              : n.x >= prevX && n.x < x;
+            if (hit) {
+              playNote(n, true);
+              flashRef.current.set(`${si}:${ni}`, time);
+            }
+          }
+        }
+      }
+
       for (const s of strokesRef.current) drawStroke(s);
       if (currentRef.current) drawStroke(currentRef.current);
+
+      // note flashes
+      for (const [key, t] of flashRef.current) {
+        const age = (time - t) / 450;
+        if (age >= 1) {
+          flashRef.current.delete(key);
+          continue;
+        }
+        const [siStr, niStr] = key.split(":");
+        const s = strokesRef.current[Number(siStr)];
+        const n = s?.notes[Number(niStr)];
+        if (!n) continue;
+        ctx.fillStyle = `oklch(0.95 0.15 ${s!.hue} / ${1 - age})`;
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, 4 + 14 * age, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // playhead line
+      ctx.strokeStyle = "oklch(0.95 0.02 265 / 0.75)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, h);
+      ctx.stroke();
 
       raf = requestAnimationFrame(render);
     };
@@ -203,7 +288,7 @@ function Index() {
       cancelAnimationFrame(raf);
       window.removeEventListener("resize", resize);
     };
-  }, []);
+  }, [playNote]);
 
   const pos = (e: React.PointerEvent<HTMLCanvasElement>): Pt => {
     const r = e.currentTarget.getBoundingClientRect();
@@ -214,7 +299,7 @@ function Index() {
     e.currentTarget.setPointerCapture(e.pointerId);
     ensureAudio();
     const p = pos(e);
-    currentRef.current = { pts: [p], hue: 190 };
+    currentRef.current = { pts: [p], hue: 190, notes: [] };
     lastSoundPtRef.current = p;
   };
 
@@ -224,8 +309,13 @@ function Index() {
     const p = pos(e);
     cur.pts.push(p);
     const anchor = lastSoundPtRef.current;
-    if (anchor && Math.hypot(p.x - anchor.x, p.y - anchor.y) > 42) {
-      cur.hue = playSegment(anchor, p);
+    if (anchor && Math.hypot(p.x - anchor.x, p.y - anchor.y) > NOTE_SPACING) {
+      cur.hue = playNote({
+        x: p.x,
+        y: p.y,
+        angle: (Math.atan2(-(p.y - anchor.y), p.x - anchor.x) * 180) / Math.PI,
+        len: Math.hypot(p.x - anchor.x, p.y - anchor.y),
+      });
       lastSoundPtRef.current = p;
     }
   };
@@ -233,13 +323,12 @@ function Index() {
   const onUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const cur = currentRef.current;
     if (!cur) return;
-    const p = pos(e);
-    cur.pts.push(p);
-    const anchor = lastSoundPtRef.current;
-    if (anchor && Math.hypot(p.x - anchor.x, p.y - anchor.y) > 6) {
-      cur.hue = playSegment(anchor, p);
+    cur.pts.push(pos(e));
+    if (cur.pts.length > 2) {
+      cur.notes = buildNotes(cur.pts);
+      strokesRef.current.push(cur);
+      setStrokeCount(strokesRef.current.length);
     }
-    if (cur.pts.length > 1) strokesRef.current.push(cur);
     currentRef.current = null;
     lastSoundPtRef.current = null;
   };
@@ -247,18 +336,12 @@ function Index() {
   const clear = () => {
     strokesRef.current = [];
     currentRef.current = null;
-    setNotes(0);
+    flashRef.current.clear();
+    setStrokeCount(0);
     setLast(null);
   };
 
-  const pickMime = () => {
-    const candidates = [
-      "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
-      "video/mp4;codecs=avc1,mp4a.40.2",
-      "video/mp4",
-      "video/webm;codecs=vp9,opus",
-      "video/webm",
-    ];
+  const pick = (candidates: string[]) => {
     for (const m of candidates) {
       if (typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported(m))
         return m;
@@ -266,57 +349,100 @@ function Index() {
     return "";
   };
 
-  const startRecording = () => {
+  const startVideo = () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     ensureAudio();
     const recDest = recDestRef.current;
     if (!recDest) return;
 
-    const stream = canvas.captureStream(60);
-    for (const track of recDest.stream.getAudioTracks()) stream.addTrack(track);
-
-    const mimeType = pickMime();
+    const mimeType = pick([
+      "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
+      "video/mp4;codecs=avc1,mp4a.40.2",
+      "video/mp4",
+      "video/webm;codecs=vp9,opus",
+      "video/webm",
+    ]);
     if (!mimeType) {
-      setNotice("Ваш браузер не умеет записывать видео с холста.");
+      setNotice("Браузер не умеет записывать видео с холста.");
       return;
     }
     const isMp4 = mimeType.startsWith("video/mp4");
     setNotice(
-      isMp4
-        ? null
-        : "Браузер не поддерживает MP4-запись — файл сохранится в формате WEBM (открывается везде и легко конвертируется).",
+      isMp4 ? null : "Браузер не поддерживает MP4 — видео сохранится в формате WEBM.",
     );
-    setFileName(isMp4 ? "liniofon.mp4" : "liniofon.webm");
 
+    const stream = canvas.captureStream(60);
+    for (const t of recDest.stream.getAudioTracks()) stream.addTrack(t);
     const rec = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 6_000_000 });
-    chunksRef.current = [];
-    rec.ondataavailable = (ev) => {
-      if (ev.data.size > 0) chunksRef.current.push(ev.data);
-    };
+    const chunks: Blob[] = [];
+    rec.ondataavailable = (ev) => ev.data.size > 0 && chunks.push(ev.data);
     rec.onstop = () => {
-      const blob = new Blob(chunksRef.current, { type: mimeType });
-      setFileUrl((prev) => {
-        if (prev) URL.revokeObjectURL(prev);
-        return URL.createObjectURL(blob);
+      const url = URL.createObjectURL(new Blob(chunks, { type: mimeType }));
+      setVideoFile((prev) => {
+        if (prev) URL.revokeObjectURL(prev.url);
+        return { url, name: isMp4 ? "liniofon.mp4" : "liniofon.webm" };
       });
-      setRecording(false);
+      setRecVideo(false);
     };
-    recorderRef.current = rec;
+    videoRecRef.current = rec;
     rec.start(200);
-    setRecording(true);
+    setRecVideo(true);
   };
 
-  const stopRecording = () => {
-    recorderRef.current?.stop();
-    recorderRef.current = null;
-  };
+  const startAudio = () => {
+    ensureAudio();
+    const recDest = recDestRef.current;
+    if (!recDest) return;
 
-  useEffect(() => {
-    return () => {
-      if (fileUrl) URL.revokeObjectURL(fileUrl);
+    const mimeType = pick([
+      "audio/mp4;codecs=mp4a.40.2",
+      "audio/mp4",
+      "audio/webm;codecs=opus",
+      "audio/webm",
+      "audio/ogg;codecs=opus",
+    ]);
+    if (!mimeType) {
+      setNotice("Браузер не умеет записывать звук.");
+      return;
+    }
+    const ext = mimeType.startsWith("audio/mp4")
+      ? "m4a"
+      : mimeType.startsWith("audio/ogg")
+        ? "ogg"
+        : "webm";
+
+    const rec = new MediaRecorder(recDest.stream, { mimeType });
+    const chunks: Blob[] = [];
+    rec.ondataavailable = (ev) => ev.data.size > 0 && chunks.push(ev.data);
+    rec.onstop = () => {
+      const url = URL.createObjectURL(new Blob(chunks, { type: mimeType }));
+      setAudioFile((prev) => {
+        if (prev) URL.revokeObjectURL(prev.url);
+        return { url, name: `liniofon.${ext}` };
+      });
+      setRecAudio(false);
     };
-  }, [fileUrl]);
+    audioRecRef.current = rec;
+    rec.start(200);
+    setRecAudio(true);
+  };
+
+  const stopVideo = () => {
+    videoRecRef.current?.stop();
+    videoRecRef.current = null;
+  };
+  const stopAudio = () => {
+    audioRecRef.current?.stop();
+    audioRecRef.current = null;
+  };
+
+  const btn =
+    "rounded-md border border-border bg-card px-4 py-2 text-sm font-medium text-card-foreground transition-colors hover:bg-accent";
+  const btnPrimary =
+    "rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90";
+  const btnStop =
+    "inline-flex items-center gap-2 rounded-md bg-destructive px-4 py-2 text-sm font-medium text-destructive-foreground transition-opacity hover:opacity-90";
 
   return (
     <main className="min-h-screen bg-background text-foreground">
@@ -325,46 +451,69 @@ function Index() {
           <div>
             <h1 className="text-3xl font-semibold tracking-tight">Линиофон</h1>
             <p className="mt-1 text-sm text-muted-foreground">
-              Рисуйте свободные линии — они звучат и остаются на холсте. Выше
-              линия — выше нота, длиннее штрих — дольше звук, наклон меняет тембр.
+              Рисуйте свободные линии — они остаются на холсте и звучат по кругу:
+              бегунок проходит слева направо и играет точки рисунка.
             </p>
           </div>
           <div className="text-right text-sm text-muted-foreground">
-            <div>Нот сыграно: {notes}</div>
+            <div>Линий: {strokeCount}</div>
             <div className="font-mono">{last ?? "—"}</div>
           </div>
         </header>
 
         <div className="flex flex-wrap items-center gap-2">
-          {recording ? (
-            <button
-              onClick={stopRecording}
-              className="inline-flex items-center gap-2 rounded-md bg-destructive px-4 py-2 text-sm font-medium text-destructive-foreground transition-opacity hover:opacity-90"
-            >
-              <span className="size-2 animate-pulse rounded-full bg-current" />
-              Остановить запись
-            </button>
-          ) : (
-            <button
-              onClick={startRecording}
-              className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90"
-            >
-              Записать видео
-            </button>
-          )}
           <button
-            onClick={clear}
-            className="rounded-md border border-border bg-card px-4 py-2 text-sm font-medium text-card-foreground transition-colors hover:bg-accent"
+            onClick={() => {
+              ensureAudio();
+              setPlaying((p) => !p);
+            }}
+            className={btnPrimary}
           >
+            {playing ? "Пауза" : "Играть"}
+          </button>
+          <label className="flex items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-sm">
+            <span className="text-muted-foreground">Круг</span>
+            <input
+              type="range"
+              min={2}
+              max={16}
+              step={1}
+              value={loopSec}
+              onChange={(e) => setLoopSec(Number(e.target.value))}
+            />
+            <span className="w-8 font-mono">{loopSec}с</span>
+          </label>
+          <button onClick={recVideo ? stopVideo : startVideo} className={recVideo ? btnStop : btn}>
+            {recVideo ? (
+              <>
+                <span className="size-2 animate-pulse rounded-full bg-current" />
+                Стоп видео
+              </>
+            ) : (
+              "Записать видео"
+            )}
+          </button>
+          <button onClick={recAudio ? stopAudio : startAudio} className={recAudio ? btnStop : btn}>
+            {recAudio ? (
+              <>
+                <span className="size-2 animate-pulse rounded-full bg-current" />
+                Стоп аудио
+              </>
+            ) : (
+              "Записать аудио"
+            )}
+          </button>
+          <button onClick={clear} className={btn}>
             Очистить холст
           </button>
-          {fileUrl && !recording && (
-            <a
-              href={fileUrl}
-              download={fileName}
-              className="rounded-md border border-border bg-accent px-4 py-2 text-sm font-medium text-accent-foreground transition-opacity hover:opacity-90"
-            >
-              Скачать {fileName}
+          {videoFile && !recVideo && (
+            <a href={videoFile.url} download={videoFile.name} className={btn}>
+              Скачать {videoFile.name}
+            </a>
+          )}
+          {audioFile && !recAudio && (
+            <a href={audioFile.url} download={audioFile.name} className={btn}>
+              Скачать {audioFile.name}
             </a>
           )}
         </div>
