@@ -17,73 +17,19 @@ export const Route = createFileRoute("/")({
 
 type Pt = { x: number; y: number };
 type NotePt = { pi: number; x: number; y: number; angle: number; len: number };
-type OscType = "sine" | "triangle" | "sawtooth" | "square" | "pulse" | "noise";
-
-type SoundPreset = {
-  id: string;
-  name: string;
-  hue: number;
-  oscType: OscType;
-  pulseWidth: number;
-  filterFreq: number;
-  filterQ: number;
-  distortion: number;
-  bitcrusher: number;
-  delayTime: number;
-  delayFeedback: number;
-  volume: number;
-};
-
-type Stroke = {
-  pts: Pt[];
-  presetId: string;
-  notes: NotePt[];
-};
+type Stroke = { pts: Pt[]; hue: number; notes: NotePt[] };
 
 const SCALE = [0, 2, 3, 5, 7, 9, 10, 12, 14, 15, 17, 19, 21, 22, 24];
 const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 const NOTE_SPACING = 38;
 const HANDLE_R = 9;
-const PIXEL_SIZE = 5;
 
-const DEFAULT_PRESETS: SoundPreset[] = [
-  { id: "sega-lead", name: "SEGA Lead", hue: 0, oscType: "sawtooth", pulseWidth: 0.5, filterFreq: 2000, filterQ: 5, distortion: 10, bitcrusher: 0, delayTime: 0.1, delayFeedback: 0.2, volume: 0.3 },
-  { id: "nes-square", name: "NES Square", hue: 210, oscType: "square", pulseWidth: 0.5, filterFreq: 1500, filterQ: 2, distortion: 0, bitcrusher: 0, delayTime: 0, delayFeedback: 0, volume: 0.25 },
-  { id: "gameboy-arp", name: "Game Boy Arp", hue: 120, oscType: "triangle", pulseWidth: 0.5, filterFreq: 1000, filterQ: 3, distortion: 0, bitcrusher: 0, delayTime: 0.15, delayFeedback: 0.3, volume: 0.28 },
-  { id: "chiptune-bass", name: "Chiptune Bass", hue: 280, oscType: "square", pulseWidth: 0.25, filterFreq: 400, filterQ: 8, distortion: 15, bitcrusher: 0, delayTime: 0.05, delayFeedback: 0.1, volume: 0.35 },
-  { id: "8bit-noise", name: "8-bit Noise", hue: 50, oscType: "noise", pulseWidth: 0.5, filterFreq: 3000, filterQ: 1, distortion: 0, bitcrusher: 4, delayTime: 0, delayFeedback: 0, volume: 0.2 },
-  { id: "pulse-wave", name: "Pulse Wave", hue: 170, oscType: "pulse", pulseWidth: 0.3, filterFreq: 1200, filterQ: 4, distortion: 8, bitcrusher: 0, delayTime: 0.2, delayFeedback: 0.25, volume: 0.27 },
-];
-
-function makeDistortionCurve(amount: number) {
-  const k = typeof amount === "number" ? amount : 50;
-  const n_samples = 44100;
-  const curve = new Float32Array(n_samples);
-  const deg = Math.PI / 180;
-  for (let i = 0; i < n_samples; ++i) {
-    const x = (i * 2) / n_samples - 1;
-    curve[i] = ((3 + k) * x * 20 * deg) / (Math.PI + k * Math.abs(x));
-  }
-  return curve;
-}
-
-function createPulseWave(ctx: AudioContext, pulseWidth: number): PeriodicWave {
-  const real = new Float32Array(64);
-  const imag = new Float32Array(64);
-  for (let n = 1; n < 64; n++) {
-    imag[n] = (2 / (n * Math.PI)) * Math.sin(n * Math.PI * pulseWidth);
-  }
-  return ctx.createPeriodicWave(real, imag);
-}
-
-function createNoiseBuffer(ctx: AudioContext): AudioBuffer {
-  const bufferSize = ctx.sampleRate * 2;
-  const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
-  const data = buffer.getChannelData(0);
-  for (let i = 0; i < bufferSize; i++) {
-    data[i] = Math.random() * 2 - 1;
-  }
-  return buffer;
+function timbreFor(angleDeg: number): { type: OscillatorType; hue: number } {
+  const a = ((angleDeg % 180) + 180) % 180;
+  if (a < 45) return { type: "sine", hue: 190 };
+  if (a < 90) return { type: "triangle", hue: 145 };
+  if (a < 135) return { type: "sawtooth", hue: 35 };
+  return { type: "square", hue: 320 };
 }
 
 function refreshNotes(s: Stroke) {
@@ -115,7 +61,9 @@ function buildNotes(pts: Pt[]): NotePt[] {
     acc += Math.hypot(b.x - a.x, b.y - a.y);
     if (acc >= NOTE_SPACING || i === pts.length - 1) {
       notes.push({
-        pi: i, x: b.x, y: b.y,
+        pi: i,
+        x: b.x,
+        y: b.y,
         angle: (Math.atan2(-(b.y - a.y), b.x - a.x) * 180) / Math.PI,
         len: acc,
       });
@@ -143,11 +91,11 @@ function Index() {
   const recDestRef = useRef<MediaStreamAudioDestinationNode | null>(null);
   const videoRecRef = useRef<MediaRecorder | null>(null);
   const audioRecRef = useRef<MediaRecorder | null>(null);
-  const noiseBufferRef = useRef<AudioBuffer | null>(null);
 
-  const [presets, setPresets] = useState<SoundPreset[]>(DEFAULT_PRESETS);
-  const [currentPresetId, setCurrentPresetId] = useState(DEFAULT_PRESETS[0].id);
-  const [showSettings, setShowSettings] = useState(false);
+  // Состояние для изображения и sonification
+  const [bgImage, setBgImage] = useState<HTMLImageElement | null>(null);
+  const [imageSonification, setImageSonification] = useState(false);
+  const lastSonifyXRef = useRef(-1);
 
   const [mode, setMode] = useState<"draw" | "edit">("draw");
   const [playing, setPlaying] = useState(true);
@@ -160,13 +108,9 @@ function Index() {
   const [audioFile, setAudioFile] = useState<{ url: string; name: string } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
-  const presetsRef = useRef(presets);
-  useEffect(() => { presetsRef.current = presets; }, [presets]);
   useEffect(() => { playingRef.current = playing; }, [playing]);
   useEffect(() => { loopSecRef.current = loopSec; }, [loopSec]);
   useEffect(() => { modeRef.current = mode; }, [mode]);
-
-  const currentPreset = presets.find(p => p.id === currentPresetId) ?? presets[0];
 
   const ensureAudio = useCallback(() => {
     if (!audioRef.current) {
@@ -174,70 +118,53 @@ function Index() {
       const ctx = new AC();
       const master = ctx.createGain();
       master.gain.value = 0.28;
+      const delay = ctx.createDelay(1.5);
+      delay.delayTime.value = 0.26;
+      const fb = ctx.createGain();
+      fb.gain.value = 0.28;
+      delay.connect(fb);
+      fb.connect(delay);
       const recDest = ctx.createMediaStreamDestination();
       master.connect(ctx.destination);
       master.connect(recDest);
+      master.connect(delay);
+      delay.connect(ctx.destination);
+      delay.connect(recDest);
       audioRef.current = ctx;
       masterRef.current = master;
       recDestRef.current = recDest;
-      noiseBufferRef.current = createNoiseBuffer(ctx);
     }
     if (audioRef.current.state === "suspended") void audioRef.current.resume();
     return audioRef.current;
   }, []);
 
   const playNote = useCallback(
-    (n: Omit<NotePt, "pi">, preset: SoundPreset, silentLabel = false) => {
+    (n: Omit<NotePt, "pi">, silentLabel = false) => {
       const ctx = ensureAudio();
       const master = masterRef.current;
       const canvas = canvasRef.current;
-      if (!master || !canvas) return;
+      if (!master || !canvas) return 190;
 
       const w = canvas.clientWidth;
       const h = canvas.clientHeight;
+      const { type, hue } = timbreFor(n.angle);
       const idx = Math.round((1 - n.y / h) * (SCALE.length - 1));
       const semitone = SCALE[Math.max(0, Math.min(SCALE.length - 1, idx))] ?? 0;
       const freq = 174.61 * Math.pow(2, semitone / 12);
       const dur = Math.min(2.2, 0.18 + (n.len / Math.max(w, 1)) * 3.2);
       const now = ctx.currentTime;
 
-      let sourceNode: AudioNode;
-      if (preset.oscType === "noise") {
-        const noise = ctx.createBufferSource();
-        noise.buffer = noiseBufferRef.current!;
-        noise.loop = true;
-        sourceNode = noise;
-        noise.start(now);
-        noise.stop(now + dur + 0.05);
-      } else if (preset.oscType === "pulse") {
-        const osc = ctx.createOscillator();
-        osc.setPeriodicWave(createPulseWave(ctx, preset.pulseWidth));
-        osc.frequency.setValueAtTime(freq, now);
-        sourceNode = osc;
-        osc.start(now);
-        osc.stop(now + dur + 0.05);
-      } else {
-        const osc = ctx.createOscillator();
-        osc.type = preset.oscType as OscillatorType;
-        osc.frequency.setValueAtTime(freq, now);
-        sourceNode = osc;
-        osc.start(now);
-        osc.stop(now + dur + 0.05);
-      }
+      const osc = ctx.createOscillator();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, now);
 
       const filter = ctx.createBiquadFilter();
       filter.type = "lowpass";
-      filter.frequency.setValueAtTime(preset.filterFreq, now);
-      filter.Q.value = preset.filterQ;
-
-      const distortion = ctx.createWaveShaper();
-      if (preset.distortion > 0) {
-        distortion.curve = makeDistortionCurve(preset.distortion);
-        distortion.oversample = "4x";
-      }
+      filter.frequency.setValueAtTime(800 + Math.abs(n.angle) * 40, now);
+      filter.Q.value = 3;
 
       const gain = ctx.createGain();
-      const peak = preset.volume * (0.5 + Math.min(0.5, n.len / 1600));
+      const peak = 0.07 + Math.min(0.13, n.len / 1600);
       gain.gain.setValueAtTime(0.0001, now);
       gain.gain.exponentialRampToValueAtTime(peak, now + 0.02);
       gain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
@@ -245,36 +172,113 @@ function Index() {
       const pan = ctx.createStereoPanner();
       pan.pan.value = Math.max(-1, Math.min(1, (n.x / Math.max(w, 1)) * 2 - 1));
 
-      let delayNode: DelayNode | null = null;
-      let feedbackNode: GainNode | null = null;
-      if (preset.delayTime > 0 && preset.delayFeedback > 0) {
-        delayNode = ctx.createDelay(1.5);
-        delayNode.delayTime.value = preset.delayTime;
-        feedbackNode = ctx.createGain();
-        feedbackNode.gain.value = preset.delayFeedback;
-        delayNode.connect(feedbackNode);
-        feedbackNode.connect(delayNode);
-      }
-
-      sourceNode.connect(filter);
-      if (preset.distortion > 0) {
-        filter.connect(distortion);
-        distortion.connect(gain);
-      } else {
-        filter.connect(gain);
-      }
-      gain.connect(pan);
-      pan.connect(master);
-
-      if (delayNode && feedbackNode) {
-        gain.connect(delayNode);
-        delayNode.connect(master);
-      }
+      osc.connect(filter).connect(gain).connect(pan).connect(master);
+      osc.start(now);
+      osc.stop(now + dur + 0.05);
 
       if (!silentLabel)
-        setLast(`${NOTE_NAMES[(3 + semitone) % 12]} · ${dur.toFixed(2)} с · ${preset.name}`);
+        setLast(`${NOTE_NAMES[(3 + semitone) % 12]} · ${dur.toFixed(2)} с · ${type}`);
+      return hue;
     },
     [ensureAudio],
+  );
+
+  // Sonification: озвучивание столбца пикселей изображения
+  const sonifyColumn = useCallback(
+    (canvasX: number) => {
+      if (!bgImage || !imageSonification) return;
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+
+      const w = canvas.clientWidth;
+      const h = canvas.clientHeight;
+
+      // Создаём offscreen canvas для чтения пикселей
+      const offCanvas = document.createElement("canvas");
+      offCanvas.width = w;
+      offCanvas.height = h;
+      const offCtx = offCanvas.getContext("2d")!;
+      offCtx.drawImage(bgImage, 0, 0, w, h);
+
+      const imgData = offCtx.getImageData(canvasX, 0, 1, h);
+      const data = imgData.data;
+
+      const audioCtx = ensureAudio();
+      const master = masterRef.current;
+      if (!master) return;
+
+      const BANDS = 6; // 6 голосов
+      const bandHeight = Math.floor(h / BANDS);
+      const now = audioCtx.currentTime;
+      const dur = 0.12;
+
+      for (let b = 0; b < BANDS; b++) {
+        let totalBrightness = 0;
+        let totalR = 0, totalG = 0, totalB = 0;
+        let pixelCount = 0;
+
+        for (let y = b * bandHeight; y < (b + 1) * bandHeight && y < h; y++) {
+          const idx = y * 4;
+          const r = data[idx]!;
+          const g = data[idx + 1]!;
+          const bl = data[idx + 2]!;
+          const alpha = data[idx + 3]!;
+          
+          if (alpha < 30) continue; // пропускаем прозрачные
+          
+          const brightness = (r + g + bl) / 3;
+          totalBrightness += brightness;
+          totalR += r;
+          totalG += g;
+          totalB += bl;
+          pixelCount++;
+        }
+
+        if (pixelCount === 0) continue;
+
+        const avgBrightness = totalBrightness / pixelCount;
+        const avgR = totalR / pixelCount;
+        const avgG = totalG / pixelCount;
+        const avgB = totalB / pixelCount;
+
+        // Пропускаем очень тёмные пиксели
+        if (avgBrightness < 20) continue;
+
+        // Маппинг яркости на ноту
+        const noteIdx = Math.round((1 - avgBrightness / 255) * (SCALE.length - 1));
+        const semitone = SCALE[Math.max(0, Math.min(SCALE.length - 1, noteIdx))] ?? 0;
+        const freq = 130.81 * Math.pow(2, semitone / 12);
+
+        // Громкость от яркости
+        const vol = (avgBrightness / 255) * 0.08;
+
+        // Тембр от доминирующего цвета
+        let oscType: OscillatorType = "sine";
+        if (avgR > avgG && avgR > avgB) oscType = "sawtooth";
+        else if (avgG > avgR && avgG > avgB) oscType = "triangle";
+        else if (avgB > avgR && avgB > avgG) oscType = "square";
+
+        const osc = audioCtx.createOscillator();
+        osc.type = oscType;
+        osc.frequency.setValueAtTime(freq, now);
+
+        const gain = audioCtx.createGain();
+        gain.gain.setValueAtTime(0.0001, now);
+        gain.gain.exponentialRampToValueAtTime(vol, now + 0.01);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+
+        const pan = audioCtx.createStereoPanner();
+        pan.pan.value = (b / BANDS) * 2 - 1;
+
+        osc.connect(gain).connect(pan).connect(master);
+        osc.start(now);
+        osc.stop(now + dur + 0.05);
+      }
+    },
+    [bgImage, imageSonification, ensureAudio],
   );
 
   useEffect(() => {
@@ -295,26 +299,23 @@ function Index() {
     resize();
     window.addEventListener("resize", resize);
 
-    const drawStrokePixelated = (s: Stroke) => {
+    const drawStroke = (s: Stroke) => {
       if (s.pts.length < 2) return;
-      const preset = presetsRef.current.find(p => p.id === s.presetId);
-      if (!preset) return;
-      ctx.fillStyle = `oklch(0.82 0.19 ${preset.hue})`;
-      ctx.shadowBlur = 0;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.strokeStyle = `oklch(0.82 0.19 ${s.hue})`;
+      ctx.lineWidth = 4;
+      ctx.shadowBlur = 14;
+      ctx.shadowColor = `oklch(0.8 0.2 ${s.hue} / 0.7)`;
+      ctx.beginPath();
+      const first = s.pts[0]!;
+      ctx.moveTo(first.x, first.y);
       for (let i = 1; i < s.pts.length; i++) {
-        const a = s.pts[i - 1]!;
-        const b = s.pts[i]!;
-        const dist = Math.hypot(b.x - a.x, b.y - a.y);
-        const steps = Math.max(1, Math.floor(dist / PIXEL_SIZE));
-        for (let step = 0; step <= steps; step++) {
-          const t = step / steps;
-          const x = a.x + (b.x - a.x) * t;
-          const y = a.y + (b.y - a.y) * t;
-          const px = Math.floor(x / PIXEL_SIZE) * PIXEL_SIZE;
-          const py = Math.floor(y / PIXEL_SIZE) * PIXEL_SIZE;
-          ctx.fillRect(px, py, PIXEL_SIZE, PIXEL_SIZE);
-        }
+        const p = s.pts[i]!;
+        ctx.lineTo(p.x, p.y);
       }
+      ctx.stroke();
+      ctx.shadowBlur = 0;
     };
 
     const render = (time: number) => {
@@ -323,8 +324,15 @@ function Index() {
       const w = canvas.clientWidth;
       const h = canvas.clientHeight;
 
-      ctx.fillStyle = "oklch(0.19 0.03 265)";
-      ctx.fillRect(0, 0, w, h);
+      // Фон: изображение или тёмный цвет
+      if (bgImage) {
+        ctx.drawImage(bgImage, 0, 0, w, h);
+        ctx.fillStyle = "rgba(0, 0, 0, 0.3)";
+        ctx.fillRect(0, 0, w, h);
+      } else {
+        ctx.fillStyle = "oklch(0.19 0.03 265)";
+        ctx.fillRect(0, 0, w, h);
+      }
 
       ctx.lineWidth = 1;
       for (let i = 0; i < SCALE.length; i++) {
@@ -346,34 +354,44 @@ function Index() {
 
       if (playingRef.current) {
         const wrapped = x < prevX;
+        
+        // Воспроизведение линий
         for (let si = 0; si < strokesRef.current.length; si++) {
           const s = strokesRef.current[si]!;
-          const preset = presetsRef.current.find(p => p.id === s.presetId);
-          if (!preset) continue;
           for (let ni = 0; ni < s.notes.length; ni++) {
             const n = s.notes[ni]!;
             const hit = wrapped ? n.x >= prevX || n.x < x : n.x >= prevX && n.x < x;
             if (hit) {
-              playNote(n, preset, true);
+              playNote(n, true);
               flashRef.current.set(`${si}:${ni}`, time);
             }
           }
         }
+
+        // Sonification изображения
+        if (imageSonification && bgImage) {
+          const currentX = Math.floor(x);
+          if (currentX !== lastSonifyXRef.current && currentX % 3 === 0) {
+            sonifyColumn(currentX);
+            lastSonifyXRef.current = currentX;
+          }
+        }
       }
 
-      for (const s of strokesRef.current) drawStrokePixelated(s);
-      if (currentRef.current) drawStrokePixelated(currentRef.current);
+      for (const s of strokesRef.current) drawStroke(s);
+      if (currentRef.current) drawStroke(currentRef.current);
 
       for (const [key, t] of flashRef.current) {
         const age = (time - t) / 450;
-        if (age >= 1) { flashRef.current.delete(key); continue; }
+        if (age >= 1) {
+          flashRef.current.delete(key);
+          continue;
+        }
         const [siStr, niStr] = key.split(":");
         const s = strokesRef.current[Number(siStr)];
         const n = s?.notes[Number(niStr)];
         if (!n) continue;
-        const preset = presetsRef.current.find(p => p.id === s!.presetId);
-        if (!preset) continue;
-        ctx.fillStyle = `oklch(0.95 0.15 ${preset.hue} / ${1 - age})`;
+        ctx.fillStyle = `oklch(0.95 0.15 ${s!.hue} / ${1 - age})`;
         ctx.beginPath();
         ctx.arc(n.x, n.y, 4 + 14 * age, 0, Math.PI * 2);
         ctx.fill();
@@ -382,17 +400,19 @@ function Index() {
       if (modeRef.current === "edit") {
         for (let si = 0; si < strokesRef.current.length; si++) {
           const s = strokesRef.current[si]!;
-          const preset = presetsRef.current.find(p => p.id === s.presetId);
-          if (!preset) continue;
           for (let ni = 0; ni < s.notes.length; ni++) {
             const n = s.notes[ni]!;
-            const active = (dragRef.current?.si === si && dragRef.current?.ni === ni) || (hoverRef.current?.si === si && hoverRef.current?.ni === ni);
+            const active =
+              (dragRef.current?.si === si && dragRef.current?.ni === ni) ||
+              (hoverRef.current?.si === si && hoverRef.current?.ni === ni);
             ctx.beginPath();
             ctx.arc(n.x, n.y, active ? HANDLE_R + 3 : HANDLE_R, 0, Math.PI * 2);
-            ctx.fillStyle = active ? "oklch(0.95 0.02 265 / 0.95)" : "oklch(0.25 0.03 265 / 0.9)";
+            ctx.fillStyle = active
+              ? "oklch(0.95 0.02 265 / 0.95)"
+              : "oklch(0.25 0.03 265 / 0.9)";
             ctx.fill();
             ctx.lineWidth = 2;
-            ctx.strokeStyle = `oklch(0.85 0.18 ${preset.hue})`;
+            ctx.strokeStyle = `oklch(0.85 0.18 ${timbreFor(n.angle).hue})`;
             ctx.stroke();
           }
         }
@@ -413,7 +433,7 @@ function Index() {
       cancelAnimationFrame(raf);
       window.removeEventListener("resize", resize);
     };
-  }, [playNote]);
+  }, [playNote, bgImage, imageSonification, sonifyColumn]);
 
   const pos = (e: React.PointerEvent<HTMLCanvasElement>): Pt => {
     const r = e.currentTarget.getBoundingClientRect();
@@ -431,7 +451,7 @@ function Index() {
     return null;
   };
 
-  const describe = (n: NotePt, preset: SoundPreset) => {
+  const describe = (n: NotePt) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const h = canvas.clientHeight;
@@ -439,40 +459,43 @@ function Index() {
     const idx = Math.round((1 - n.y / h) * (SCALE.length - 1));
     const semitone = SCALE[Math.max(0, Math.min(SCALE.length - 1, idx))] ?? 0;
     const dur = Math.min(2.2, 0.18 + (n.len / Math.max(w, 1)) * 3.2);
-    setLast(`${NOTE_NAMES[(3 + semitone) % 12]} · ${dur.toFixed(2)} с · ${preset.name}`);
+    setLast(
+      `${NOTE_NAMES[(3 + semitone) % 12]} · ${dur.toFixed(2)} с · ${timbreFor(n.angle).type}`,
+    );
   };
 
   const onDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     e.currentTarget.setPointerCapture(e.pointerId);
     ensureAudio();
     const p = pos(e);
+
     if (mode === "edit") {
       const hit = findHandle(p);
       dragRef.current = hit;
       if (hit) {
-        const s = strokesRef.current[hit.si]!;
-        const preset = presetsRef.current.find(pr => pr.id === s.presetId);
-        if (!preset) return;
-        const n = s.notes[hit.ni]!;
-        describe(n, preset);
-        playNote(n, preset);
+        const n = strokesRef.current[hit.si]!.notes[hit.ni]!;
+        describe(n);
+        playNote(n);
       }
       return;
     }
-    currentRef.current = { pts: [p], presetId: currentPresetId, notes: [] };
+
+    currentRef.current = { pts: [p], hue: 190, notes: [] };
     lastSoundPtRef.current = p;
   };
 
   const onMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const p = pos(e);
+
     if (mode === "edit") {
       const drag = dragRef.current;
-      if (!drag) { hoverRef.current = findHandle(p); return; }
+      if (!drag) {
+        hoverRef.current = findHandle(p);
+        return;
+      }
       const s = strokesRef.current[drag.si];
-      const preset = presetsRef.current.find(pr => pr.id === s?.presetId);
-      if (!s || !preset) return;
-      const n = s.notes[drag.ni];
-      if (!n) return;
+      const n = s?.notes[drag.ni];
+      if (!s || !n) return;
       const anchor = s.pts[n.pi]!;
       const dx = p.x - anchor.x;
       const dy = p.y - anchor.y;
@@ -485,21 +508,22 @@ function Index() {
         pt.y += dy * f;
       }
       refreshNotes(s);
-      describe(n, preset);
+      s.hue = timbreFor(n.angle).hue;
+      describe(n);
       return;
     }
+
     const cur = currentRef.current;
     if (!cur) return;
     cur.pts.push(p);
     const anchor = lastSoundPtRef.current;
-    const preset = presetsRef.current.find(pr => pr.id === cur.presetId);
-    if (!preset) return;
     if (anchor && Math.hypot(p.x - anchor.x, p.y - anchor.y) > NOTE_SPACING) {
-      playNote({
-        x: p.x, y: p.y,
+      cur.hue = playNote({
+        x: p.x,
+        y: p.y,
         angle: (Math.atan2(-(p.y - anchor.y), p.x - anchor.x) * 180) / Math.PI,
         len: Math.hypot(p.x - anchor.x, p.y - anchor.y),
-      }, preset);
+      });
       lastSoundPtRef.current = p;
     }
   };
@@ -508,16 +532,13 @@ function Index() {
     if (mode === "edit") {
       const drag = dragRef.current;
       if (drag) {
-        const s = strokesRef.current[drag.si];
-        const preset = presetsRef.current.find(pr => pr.id === s?.presetId);
-        if (s && preset) {
-          const n = s.notes[drag.ni];
-          if (n) playNote(n, preset);
-        }
+        const n = strokesRef.current[drag.si]?.notes[drag.ni];
+        if (n) playNote(n);
       }
       dragRef.current = null;
       return;
     }
+
     const cur = currentRef.current;
     if (!cur) return;
     cur.pts.push(pos(e));
@@ -540,32 +561,32 @@ function Index() {
     setLast(null);
   };
 
-  const addPreset = () => {
-    const newId = `preset-${Date.now()}`;
-    const hue = Math.floor(Math.random() * 360);
-    const newPreset: SoundPreset = {
-      id: newId, name: `Цвет ${presets.length + 1}`, hue,
-      oscType: "sine", pulseWidth: 0.5, filterFreq: 800, filterQ: 3,
-      distortion: 0, bitcrusher: 0, delayTime: 0, delayFeedback: 0, volume: 0.28,
+  // Загрузка изображения
+  const handleImageLoad = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const img = new Image();
+    img.onload = () => {
+      setBgImage(img);
+      setImageSonification(true);
+      setNotice("Изображение загружено. Sonification включен.");
     };
-    setPresets([...presets, newPreset]);
-    setCurrentPresetId(newId);
+    img.onerror = () => {
+      setNotice("Ошибка загрузки изображения");
+    };
+    img.src = URL.createObjectURL(file);
   };
 
-  const deletePreset = (id: string) => {
-    if (presets.length <= 1) return;
-    const newPresets = presets.filter(p => p.id !== id);
-    setPresets(newPresets);
-    if (currentPresetId === id) setCurrentPresetId(newPresets[0].id);
-  };
-
-  const updatePreset = (id: string, updates: Partial<SoundPreset>) => {
-    setPresets(presets.map(p => p.id === id ? { ...p, ...updates } : p));
+  const removeImage = () => {
+    setBgImage(null);
+    setImageSonification(false);
+    setNotice(null);
   };
 
   const pick = (candidates: string[]) => {
     for (const m of candidates) {
-      if (typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported(m)) return m;
+      if (typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported(m))
+        return m;
     }
     return "";
   };
@@ -576,10 +597,23 @@ function Index() {
     ensureAudio();
     const recDest = recDestRef.current;
     if (!recDest) return;
-    const mimeType = pick(["video/mp4;codecs=avc1.42E01E,mp4a.40.2", "video/mp4;codecs=avc1,mp4a.40.2", "video/mp4", "video/webm;codecs=vp9,opus", "video/webm"]);
-    if (!mimeType) { setNotice("Браузер не умеет записывать видео с холста."); return; }
+
+    const mimeType = pick([
+      "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
+      "video/mp4;codecs=avc1,mp4a.40.2",
+      "video/mp4",
+      "video/webm;codecs=vp9,opus",
+      "video/webm",
+    ]);
+    if (!mimeType) {
+      setNotice("Браузер не умеет записывать видео с холста.");
+      return;
+    }
     const isMp4 = mimeType.startsWith("video/mp4");
-    setNotice(isMp4 ? null : "Браузер не поддерживает MP4 — видео сохранится в формате WEBM.");
+    setNotice(
+      isMp4 ? null : "Браузер не поддерживает MP4 — видео сохранится в формате WEBM.",
+    );
+
     const stream = canvas.captureStream(60);
     for (const t of recDest.stream.getAudioTracks()) stream.addTrack(t);
     const rec = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 6_000_000 });
@@ -587,7 +621,10 @@ function Index() {
     rec.ondataavailable = (ev) => ev.data.size > 0 && chunks.push(ev.data);
     rec.onstop = () => {
       const url = URL.createObjectURL(new Blob(chunks, { type: mimeType }));
-      setVideoFile((prev) => { if (prev) URL.revokeObjectURL(prev.url); return { url, name: isMp4 ? "liniofon.mp4" : "liniofon.webm" }; });
+      setVideoFile((prev) => {
+        if (prev) URL.revokeObjectURL(prev.url);
+        return { url, name: isMp4 ? "liniofon.mp4" : "liniofon.webm" };
+      });
       setRecVideo(false);
     };
     videoRecRef.current = rec;
@@ -599,15 +636,33 @@ function Index() {
     ensureAudio();
     const recDest = recDestRef.current;
     if (!recDest) return;
-    const mimeType = pick(["audio/mp4;codecs=mp4a.40.2", "audio/mp4", "audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus"]);
-    if (!mimeType) { setNotice("Браузер не умеет записывать звук."); return; }
-    const ext = mimeType.startsWith("audio/mp4") ? "m4a" : mimeType.startsWith("audio/ogg") ? "ogg" : "webm";
+
+    const mimeType = pick([
+      "audio/mp4;codecs=mp4a.40.2",
+      "audio/mp4",
+      "audio/webm;codecs=opus",
+      "audio/webm",
+      "audio/ogg;codecs=opus",
+    ]);
+    if (!mimeType) {
+      setNotice("Браузер не умеет записывать звук.");
+      return;
+    }
+    const ext = mimeType.startsWith("audio/mp4")
+      ? "m4a"
+      : mimeType.startsWith("audio/ogg")
+        ? "ogg"
+        : "webm";
+
     const rec = new MediaRecorder(recDest.stream, { mimeType });
     const chunks: Blob[] = [];
     rec.ondataavailable = (ev) => ev.data.size > 0 && chunks.push(ev.data);
     rec.onstop = () => {
       const url = URL.createObjectURL(new Blob(chunks, { type: mimeType }));
-      setAudioFile((prev) => { if (prev) URL.revokeObjectURL(prev.url); return { url, name: `liniofon.${ext}` }; });
+      setAudioFile((prev) => {
+        if (prev) URL.revokeObjectURL(prev.url);
+        return { url, name: `liniofon.${ext}` };
+      });
       setRecAudio(false);
     };
     audioRecRef.current = rec;
@@ -615,12 +670,21 @@ function Index() {
     setRecAudio(true);
   };
 
-  const stopVideo = () => { videoRecRef.current?.stop(); videoRecRef.current = null; };
-  const stopAudio = () => { audioRecRef.current?.stop(); audioRecRef.current = null; };
+  const stopVideo = () => {
+    videoRecRef.current?.stop();
+    videoRecRef.current = null;
+  };
+  const stopAudio = () => {
+    audioRecRef.current?.stop();
+    audioRecRef.current = null;
+  };
 
-  const btn = "rounded-md border border-border bg-card px-4 py-2 text-sm font-medium text-card-foreground transition-colors hover:bg-accent";
-  const btnPrimary = "rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90";
-  const btnStop = "inline-flex items-center gap-2 rounded-md bg-destructive px-4 py-2 text-sm font-medium text-destructive-foreground transition-opacity hover:opacity-90";
+  const btn =
+    "rounded-md border border-border bg-card px-4 py-2 text-sm font-medium text-card-foreground transition-colors hover:bg-accent";
+  const btnPrimary =
+    "rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90";
+  const btnStop =
+    "inline-flex items-center gap-2 rounded-md bg-destructive px-4 py-2 text-sm font-medium text-destructive-foreground transition-opacity hover:opacity-90";
 
   return (
     <main className="min-h-screen bg-background text-foreground">
@@ -630,7 +694,8 @@ function Index() {
             <h1 className="text-3xl font-semibold tracking-tight">Линиофон</h1>
             <p className="mt-1 text-sm text-muted-foreground">
               Рисуйте свободные линии — они остаются на холсте и звучат по кругу.
-              Каждый цвет имеет свой звук.
+              В режиме настройки перетаскивайте точки: вверх-вниз меняет ноту,
+              вбок — момент и длительность, наклон — тембр.
             </p>
           </div>
           <div className="text-right text-sm text-muted-foreground">
@@ -639,153 +704,114 @@ function Index() {
           </div>
         </header>
 
-        <div className="rounded-xl border border-border bg-card p-4 shadow-lg">
-          <div className="flex flex-wrap items-center gap-4">
-            <div className="flex flex-col gap-1">
-              <span className="text-xs text-muted-foreground">Цвет линии</span>
-              <div className="flex flex-wrap gap-1">
-                {presets.map((p) => (
-                  <button
-                    key={p.id}
-                    onClick={() => setCurrentPresetId(p.id)}
-                    className={`h-8 w-8 rounded border-2 transition-all ${
-                      currentPresetId === p.id ? "border-white scale-110 shadow-lg" : "border-transparent hover:border-white/50"
-                    }`}
-                    style={{ backgroundColor: `oklch(0.7 0.2 ${p.hue})` }}
-                    title={p.name}
-                  />
-                ))}
-                <button
-                  onClick={addPreset}
-                  className="h-8 w-8 rounded border-2 border-dashed border-border text-muted-foreground hover:border-primary hover:text-primary"
-                  title="Добавить цвет"
-                >
-                  +
-                </button>
-              </div>
-            </div>
-
-            <div className="flex flex-col gap-1">
-              <span className="text-xs text-muted-foreground">Пресет звука</span>
-              <select
-                value={currentPresetId}
-                onChange={(e) => setCurrentPresetId(e.target.value)}
-                className="rounded border border-border bg-background px-3 py-1.5 text-sm"
-              >
-                {presets.map(p => (
-                  <option key={p.id} value={p.id}>{p.name}</option>
-                ))}
-              </select>
-            </div>
-
-            <div className="flex flex-col gap-1">
-              <span className="text-xs text-muted-foreground">Управление</span>
-              <div className="flex gap-1">
-                <button onClick={() => setShowSettings(!showSettings)} className={btn}>
-                  {showSettings ? "Скрыть" : "Настроить звук"}
-                </button>
-                {presets.length > 1 && (
-                  <button
-                    onClick={() => deletePreset(currentPresetId)}
-                    className="rounded-md border border-destructive bg-background px-3 py-2 text-sm text-destructive hover:bg-destructive hover:text-destructive-foreground"
-                  >
-                    Удалить
-                  </button>
-                )}
-              </div>
-            </div>
-
-            <div className="flex flex-col gap-1">
-              <span className="text-xs text-muted-foreground">Текущий</span>
-              <div className="flex items-center gap-2">
-                <div className="h-6 w-6 rounded" style={{ backgroundColor: `oklch(0.7 0.2 ${currentPreset.hue})` }} />
-                <span className="text-sm font-medium">{currentPreset.name}</span>
-              </div>
-            </div>
-          </div>
-
-          {showSettings && (
-            <div className="mt-4 border-t border-border pt-4">
-              <h3 className="mb-3 text-sm font-semibold">Настройки: {currentPreset.name}</h3>
-              <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-                <div className="flex flex-col gap-1">
-                  <label className="text-xs text-muted-foreground">Название</label>
-                  <input type="text" value={currentPreset.name} onChange={(e) => updatePreset(currentPreset.id, { name: e.target.value })} className="rounded border border-border bg-background px-2 py-1 text-sm" />
-                </div>
-                <div className="flex flex-col gap-1">
-                  <label className="text-xs text-muted-foreground">Цвет: {currentPreset.hue}°</label>
-                  <input type="range" min={0} max={360} step={1} value={currentPreset.hue} onChange={(e) => updatePreset(currentPreset.id, { hue: Number(e.target.value) })} />
-                </div>
-                <div className="flex flex-col gap-1">
-                  <label className="text-xs text-muted-foreground">Тембр</label>
-                  <select value={currentPreset.oscType} onChange={(e) => updatePreset(currentPreset.id, { oscType: e.target.value as OscType })} className="rounded border border-border bg-background px-2 py-1 text-sm">
-                    <option value="sine">Синус (мягкий)</option>
-                    <option value="triangle">Треугольник (флейта)</option>
-                    <option value="sawtooth">Пила (SEGA)</option>
-                    <option value="square">Квадрат (NES)</option>
-                    <option value="pulse">Pulse (чиптюн)</option>
-                    <option value="noise">Шум (8-bit)</option>
-                  </select>
-                </div>
-                {currentPreset.oscType === "pulse" && (
-                  <div className="flex flex-col gap-1">
-                    <label className="text-xs text-muted-foreground">Ширина Pulse: {currentPreset.pulseWidth.toFixed(2)}</label>
-                    <input type="range" min={0.1} max={0.9} step={0.05} value={currentPreset.pulseWidth} onChange={(e) => updatePreset(currentPreset.id, { pulseWidth: Number(e.target.value) })} />
-                  </div>
-                )}
-                <div className="flex flex-col gap-1">
-                  <label className="text-xs text-muted-foreground">Фильтр: {currentPreset.filterFreq} Hz</label>
-                  <input type="range" min={100} max={8000} step={50} value={currentPreset.filterFreq} onChange={(e) => updatePreset(currentPreset.id, { filterFreq: Number(e.target.value) })} />
-                </div>
-                <div className="flex flex-col gap-1">
-                  <label className="text-xs text-muted-foreground">Резонанс: {currentPreset.filterQ}</label>
-                  <input type="range" min={0.1} max={20} step={0.1} value={currentPreset.filterQ} onChange={(e) => updatePreset(currentPreset.id, { filterQ: Number(e.target.value) })} />
-                </div>
-                <div className="flex flex-col gap-1">
-                  <label className="text-xs text-muted-foreground">Дисторшн: {currentPreset.distortion}</label>
-                  <input type="range" min={0} max={30} step={1} value={currentPreset.distortion} onChange={(e) => updatePreset(currentPreset.id, { distortion: Number(e.target.value) })} />
-                </div>
-                <div className="flex flex-col gap-1">
-                  <label className="text-xs text-muted-foreground">Bitcrusher: {currentPreset.bitcrusher} бит</label>
-                  <input type="range" min={0} max={16} step={1} value={currentPreset.bitcrusher} onChange={(e) => updatePreset(currentPreset.id, { bitcrusher: Number(e.target.value) })} />
-                </div>
-                <div className="flex flex-col gap-1">
-                  <label className="text-xs text-muted-foreground">Эхо: {(currentPreset.delayTime * 1000).toFixed(0)} мс</label>
-                  <input type="range" min={0} max={1000} step={10} value={currentPreset.delayTime * 1000} onChange={(e) => updatePreset(currentPreset.id, { delayTime: Number(e.target.value) / 1000 })} />
-                </div>
-                <div className="flex flex-col gap-1">
-                  <label className="text-xs text-muted-foreground">Обратная связь: {Math.round(currentPreset.delayFeedback * 100)}%</label>
-                  <input type="range" min={0} max={90} step={5} value={currentPreset.delayFeedback * 100} onChange={(e) => updatePreset(currentPreset.id, { delayFeedback: Number(e.target.value) / 100 })} />
-                </div>
-                <div className="flex flex-col gap-1">
-                  <label className="text-xs text-muted-foreground">Громкость: {Math.round(currentPreset.volume * 100)}%</label>
-                  <input type="range" min={0} max={100} step={1} value={currentPreset.volume * 100} onChange={(e) => updatePreset(currentPreset.id, { volume: Number(e.target.value) / 100 })} />
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-
         <div className="flex flex-wrap items-center gap-2">
           <div className="inline-flex overflow-hidden rounded-md border border-border">
-            <button onClick={() => setMode("draw")} className={`px-4 py-2 text-sm font-medium transition-colors ${mode === "draw" ? "bg-primary text-primary-foreground" : "bg-card text-card-foreground hover:bg-accent"}`}>Рисование</button>
-            <button onClick={() => setMode("edit")} className={`px-4 py-2 text-sm font-medium transition-colors ${mode === "edit" ? "bg-primary text-primary-foreground" : "bg-card text-card-foreground hover:bg-accent"}`}>Настройка звука</button>
+            <button
+              onClick={() => setMode("draw")}
+              className={`px-4 py-2 text-sm font-medium transition-colors ${
+                mode === "draw"
+                  ? "bg-primary text-primary-foreground"
+                  : "bg-card text-card-foreground hover:bg-accent"
+              }`}
+            >
+              Рисование
+            </button>
+            <button
+              onClick={() => setMode("edit")}
+              className={`px-4 py-2 text-sm font-medium transition-colors ${
+                mode === "edit"
+                  ? "bg-primary text-primary-foreground"
+                  : "bg-card text-card-foreground hover:bg-accent"
+              }`}
+            >
+              Настройка звука
+            </button>
           </div>
-          <button onClick={() => { ensureAudio(); setPlaying((p) => !p); }} className={btnPrimary}>{playing ? "Пауза" : "Играть"}</button>
+          <button
+            onClick={() => {
+              ensureAudio();
+              setPlaying((p) => !p);
+            }}
+            className={btnPrimary}
+          >
+            {playing ? "Пауза" : "Играть"}
+          </button>
           <label className="flex items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-sm">
             <span className="text-muted-foreground">Круг</span>
-            <input type="range" min={2} max={16} step={1} value={loopSec} onChange={(e) => setLoopSec(Number(e.target.value))} />
+            <input
+              type="range"
+              min={2}
+              max={16}
+              step={1}
+              value={loopSec}
+              onChange={(e) => setLoopSec(Number(e.target.value))}
+            />
             <span className="w-8 font-mono">{loopSec}с</span>
           </label>
-          <button onClick={recVideo ? stopVideo : startVideo} className={recVideo ? btnStop : btn}>
-            {recVideo ? (<><span className="size-2 animate-pulse rounded-full bg-current" />Стоп видео</>) : ("Записать видео")}
+          
+          {/* Кнопки для изображения */}
+          <label className={btn}>
+            📷 Загрузить изображение
+            <input
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={handleImageLoad}
+            />
+          </label>
+          {bgImage && (
+            <button
+              onClick={() => setImageSonification(!imageSonification)}
+              className={imageSonification ? btnPrimary : btn}
+            >
+              {imageSonification ? "🔊 Звук ВКЛ" : "🔇 Звук ВЫКЛ"}
+            </button>
+          )}
+          {bgImage && (
+            <button onClick={removeImage} className={btn}>
+              Убрать изображение
+            </button>
+          )}
+
+          <button
+            onClick={recVideo ? stopVideo : startVideo}
+            className={recVideo ? btnStop : btn}
+          >
+            {recVideo ? (
+              <>
+                <span className="size-2 animate-pulse rounded-full bg-current" />
+                Стоп видео
+              </>
+            ) : (
+              "Записать видео"
+            )}
           </button>
-          <button onClick={recAudio ? stopAudio : startAudio} className={recAudio ? btnStop : btn}>
-            {recAudio ? (<><span className="size-2 animate-pulse rounded-full bg-current" />Стоп аудио</>) : ("Записать аудио")}
+          <button
+            onClick={recAudio ? stopAudio : startAudio}
+            className={recAudio ? btnStop : btn}
+          >
+            {recAudio ? (
+              <>
+                <span className="size-2 animate-pulse rounded-full bg-current" />
+                Стоп аудио
+              </>
+            ) : (
+              "Записать аудио"
+            )}
           </button>
-          <button onClick={clear} className={btn}>Очистить холст</button>
-          {videoFile && !recVideo && (<a href={videoFile.url} download={videoFile.name} className={btn}>Скачать {videoFile.name}</a>)}
-          {audioFile && !recAudio && (<a href={audioFile.url} download={audioFile.name} className={btn}>Скачать {audioFile.name}</a>)}
+          <button onClick={clear} className={btn}>
+            Очистить холст
+          </button>
+          {videoFile && !recVideo && (
+            <a href={videoFile.url} download={videoFile.name} className={btn}>
+              Скачать {videoFile.name}
+            </a>
+          )}
+          {audioFile && !recAudio && (
+            <a href={audioFile.url} download={audioFile.name} className={btn}>
+              Скачать {audioFile.name}
+            </a>
+          )}
         </div>
 
         {notice && <p className="text-xs text-muted-foreground">{notice}</p>}
@@ -796,14 +822,18 @@ function Index() {
           onPointerMove={onMove}
           onPointerUp={onUp}
           onPointerCancel={onUp}
-          className={`h-[62vh] w-full touch-none rounded-xl border border-border shadow-lg ${mode === "edit" ? "cursor-grab" : "cursor-crosshair"}`}
+          className={`h-[62vh] w-full touch-none rounded-xl border border-border shadow-lg ${
+            mode === "edit" ? "cursor-grab" : "cursor-crosshair"
+          }`}
           aria-label="Холст для рисования звучащих линий"
         />
 
         <footer className="flex flex-wrap gap-4 text-xs text-muted-foreground">
-          <span>Каждый цвет = свой звук</span>
-          <span>Пиксельные линии</span>
-          <span>Тембры: синус, треугольник, пила, квадрат, pulse, шум</span>
+          <span>0–45° — мягкая синусоида</span>
+          <span>45–90° — треугольник</span>
+          <span>90–135° — пила</span>
+          <span>135–180° — квадрат</span>
+          {bgImage && <span>🎨 Изображение загружено</span>}
         </footer>
       </div>
     </main>
