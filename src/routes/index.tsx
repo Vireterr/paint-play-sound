@@ -97,7 +97,8 @@ function Index() {
       const { type } = timbreFor(angle);
 
       const idx = Math.round((1 - midY / h) * (SCALE.length - 1));
-      const semitone = SCALE[Math.max(0, Math.min(SCALE.length - 1, idx))];
+      const semitone =
+        SCALE[Math.max(0, Math.min(SCALE.length - 1, idx))] ?? 0;
       const freq = 174.61 * Math.pow(2, semitone / 12);
       const dur = Math.min(3.2, 0.14 + (len / Math.max(w, 1)) * 3);
 
