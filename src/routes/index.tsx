@@ -316,31 +316,54 @@ function Index() {
   );
 
   // ---- Качественная сонификация изображения: предрасчёт + непрерывный банк голосов ----
-  const analysisRef = useRef<{ cols: number; rows: number; lum: Float32Array; r: Float32Array; g: Float32Array; b: Float32Array } | null>(null);
+  const analysisRef = useRef<{
+    cols: number; rows: number;
+    lum: Float32Array; r: Float32Array; g: Float32Array; b: Float32Array;
+    det: Float32Array; sat: Float32Array;
+  } | null>(null);
 
   useEffect(() => {
     if (!bgImage) { analysisRef.current = null; return; }
-    const COLS = 512;
-    const ROWS = 128;
+    // Высокое разрешение анализа — больше деталей по горизонтали и вертикали
+    const COLS = 1024;
+    const ROWS = 256;
     const off = document.createElement("canvas");
     off.width = COLS;
     off.height = ROWS;
     const octx = off.getContext("2d", { willReadFrequently: true })!;
+    octx.imageSmoothingEnabled = true;
+    octx.imageSmoothingQuality = "high";
     octx.drawImage(bgImage, 0, 0, COLS, ROWS);
     const d = octx.getImageData(0, 0, COLS, ROWS).data;
     const n = COLS * ROWS;
     const lum = new Float32Array(n), rr = new Float32Array(n), gg = new Float32Array(n), bb = new Float32Array(n);
+    const det = new Float32Array(n), sat = new Float32Array(n);
     for (let i = 0; i < n; i++) {
       const o = i * 4;
       const a = (d[o + 3] ?? 255) / 255;
       const r = (d[o] ?? 0) * a, g = (d[o + 1] ?? 0) * a, b = (d[o + 2] ?? 0) * a;
       rr[i] = r; gg[i] = g; bb[i] = b;
       lum[i] = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+      const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+      sat[i] = mx <= 0 ? 0 : (mx - mn) / mx;
     }
-    analysisRef.current = { cols: COLS, rows: ROWS, lum, r: rr, g: gg, b: bb };
+    // Детализация: модуль градиента (края и текстура)
+    for (let y = 0; y < ROWS; y++) {
+      for (let x = 0; x < COLS; x++) {
+        const i = y * COLS + x;
+        const l = lum[i] ?? 0;
+        const lx = lum[y * COLS + Math.min(COLS - 1, x + 1)] ?? l;
+        const ly = lum[Math.min(ROWS - 1, y + 1) * COLS + x] ?? l;
+        det[i] = Math.min(1, (Math.abs(lx - l) + Math.abs(ly - l)) * 3);
+      }
+    }
+    analysisRef.current = { cols: COLS, rows: ROWS, lum, r: rr, g: gg, b: bb, det, sat };
   }, [bgImage]);
 
-  type SonVoice = { osc: AudioNode; gain: GainNode; filter: BiquadFilterNode; pan: StereoPannerNode; level: number };
+  type SonVoice = {
+    osc: AudioNode; gain: GainNode; filter: BiquadFilterNode; pan: StereoPannerNode; level: number;
+    noiseGain: GainNode; noiseFilter: BiquadFilterNode; baseFreq: number; noiseLevel: number;
+  };
   const sonVoicesRef = useRef<SonVoice[] | null>(null);
   const sonBusRef = useRef<GainNode | null>(null);
 
