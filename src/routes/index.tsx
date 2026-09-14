@@ -179,7 +179,6 @@ function Index() {
   const [imageSonification, setImageSonification] = useState(false);
   const [sonSettings, setSonSettings] = useState<SonificationSettings>(DEFAULT_SONIFICATION);
   const [showSonSettings, setShowSonSettings] = useState(false);
-  const lastSonifyXRef = useRef(-1);
 
   const [mode, setMode] = useState<"draw" | "edit">("draw");
   const [playing, setPlaying] = useState(true);
