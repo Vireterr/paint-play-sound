@@ -81,6 +81,8 @@ const DEFAULT_SONIFICATION: SonificationSettings = {
   delayTime: 0,
   delayFeedback: 0,
   minBrightness: 20,
+  detail: 0.35,
+  contrast: 1.4,
 };
 
 function makeDistortionCurve(amount: number) {
