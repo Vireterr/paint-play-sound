@@ -45,6 +45,8 @@ type SonificationSettings = {
   delayTime: number;
   delayFeedback: number;
   minBrightness: number;
+  detail: number; // 0..1 — количество текстуры/шума от мелких деталей
+  contrast: number; // 0.5..3 — контраст яркости → громкость
 };
 
 type Stroke = {
@@ -79,6 +81,8 @@ const DEFAULT_SONIFICATION: SonificationSettings = {
   delayTime: 0,
   delayFeedback: 0,
   minBrightness: 20,
+  detail: 0.35,
+  contrast: 1.4,
 };
 
 function makeDistortionCurve(amount: number) {
@@ -312,31 +316,54 @@ function Index() {
   );
 
   // ---- Качественная сонификация изображения: предрасчёт + непрерывный банк голосов ----
-  const analysisRef = useRef<{ cols: number; rows: number; lum: Float32Array; r: Float32Array; g: Float32Array; b: Float32Array } | null>(null);
+  const analysisRef = useRef<{
+    cols: number; rows: number;
+    lum: Float32Array; r: Float32Array; g: Float32Array; b: Float32Array;
+    det: Float32Array; sat: Float32Array;
+  } | null>(null);
 
   useEffect(() => {
     if (!bgImage) { analysisRef.current = null; return; }
-    const COLS = 512;
-    const ROWS = 128;
+    // Высокое разрешение анализа — больше деталей по горизонтали и вертикали
+    const COLS = 1024;
+    const ROWS = 256;
     const off = document.createElement("canvas");
     off.width = COLS;
     off.height = ROWS;
     const octx = off.getContext("2d", { willReadFrequently: true })!;
+    octx.imageSmoothingEnabled = true;
+    octx.imageSmoothingQuality = "high";
     octx.drawImage(bgImage, 0, 0, COLS, ROWS);
     const d = octx.getImageData(0, 0, COLS, ROWS).data;
     const n = COLS * ROWS;
     const lum = new Float32Array(n), rr = new Float32Array(n), gg = new Float32Array(n), bb = new Float32Array(n);
+    const det = new Float32Array(n), sat = new Float32Array(n);
     for (let i = 0; i < n; i++) {
       const o = i * 4;
       const a = (d[o + 3] ?? 255) / 255;
       const r = (d[o] ?? 0) * a, g = (d[o + 1] ?? 0) * a, b = (d[o + 2] ?? 0) * a;
       rr[i] = r; gg[i] = g; bb[i] = b;
       lum[i] = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+      const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+      sat[i] = mx <= 0 ? 0 : (mx - mn) / mx;
     }
-    analysisRef.current = { cols: COLS, rows: ROWS, lum, r: rr, g: gg, b: bb };
+    // Детализация: модуль градиента (края и текстура)
+    for (let y = 0; y < ROWS; y++) {
+      for (let x = 0; x < COLS; x++) {
+        const i = y * COLS + x;
+        const l = lum[i] ?? 0;
+        const lx = lum[y * COLS + Math.min(COLS - 1, x + 1)] ?? l;
+        const ly = lum[Math.min(ROWS - 1, y + 1) * COLS + x] ?? l;
+        det[i] = Math.min(1, (Math.abs(lx - l) + Math.abs(ly - l)) * 3);
+      }
+    }
+    analysisRef.current = { cols: COLS, rows: ROWS, lum, r: rr, g: gg, b: bb, det, sat };
   }, [bgImage]);
 
-  type SonVoice = { osc: AudioNode; gain: GainNode; filter: BiquadFilterNode; pan: StereoPannerNode; level: number };
+  type SonVoice = {
+    osc: AudioNode; gain: GainNode; filter: BiquadFilterNode; pan: StereoPannerNode; level: number;
+    noiseGain: GainNode; noiseFilter: BiquadFilterNode; baseFreq: number; noiseLevel: number;
+  };
   const sonVoicesRef = useRef<SonVoice[] | null>(null);
   const sonBusRef = useRef<GainNode | null>(null);
 
@@ -437,12 +464,27 @@ function Index() {
       const pan = ctx.createStereoPanner();
       pan.pan.value = s.bands > 1 ? ((b / (s.bands - 1)) * 1.4 - 0.7) : 0;
 
+      // Текстурный слой: мелкие детали изображения → полосовой шум на частоте голоса
+      const noiseSrc = ctx.createBufferSource();
+      noiseSrc.buffer = noiseBufferRef.current!;
+      noiseSrc.loop = true;
+      noiseSrc.start(now);
+      const noiseFilter = ctx.createBiquadFilter();
+      noiseFilter.type = "bandpass";
+      noiseFilter.frequency.value = freq * 2;
+      noiseFilter.Q.value = 6;
+      const noiseGain = ctx.createGain();
+      noiseGain.gain.value = 0.0001;
+      noiseSrc.connect(noiseFilter);
+      noiseFilter.connect(noiseGain);
+      noiseGain.connect(pan);
+
       src.connect(filter);
       filter.connect(gain);
       gain.connect(pan);
       pan.connect(bus);
 
-      voices.push({ osc: src, gain, filter, pan, level: 0 });
+      voices.push({ osc: src, gain, filter, pan, level: 0, noiseGain, noiseFilter, baseFreq: freq, noiseLevel: 0 });
     }
     sonVoicesRef.current = voices;
   }, [ensureAudio, teardownSonVoices]);
@@ -464,42 +506,60 @@ function Index() {
       const bands = voices.length;
       const now = ctx.currentTime;
 
-      // сглаживание по колонкам: небольшое окно вокруг текущей позиции
+      // Окно сканирования: «Шаг сканирования» задаёт ширину читаемой полосы пикселей
       const xf = Math.min(an.cols - 1, Math.max(0, progress * (an.cols - 1)));
-      const x0 = Math.floor(xf);
-      const x1 = Math.min(an.cols - 1, x0 + 1);
-      const t = xf - x0;
+      const half = Math.max(0, Math.round((s.scanStep - 1) / 2));
+      const xFrom = Math.max(0, Math.round(xf) - half);
+      const xTo = Math.min(an.cols - 1, Math.round(xf) + half);
       const rowsPerBand = an.rows / bands;
       const minL = s.minBrightness / 255;
+      // реакция сглаживания: мелкий шаг = быстрее и детальнее
+      const smooth = Math.min(0.9, 0.45 + s.scanStep * 0.02);
+      const glide = Math.max(0.02, 0.02 + s.scanStep * 0.006);
 
       for (let b = 0; b < bands; b++) {
         const yStart = Math.floor(b * rowsPerBand);
         const yEnd = Math.max(yStart + 1, Math.floor((b + 1) * rowsPerBand));
-        let lum = 0, rs = 0, gs = 0, bs = 0, cnt = 0;
+        let lum = 0, lum2 = 0, rs = 0, gs = 0, bs = 0, dt = 0, st = 0, cnt = 0;
         for (let y = yStart; y < yEnd; y++) {
-          const i0 = y * an.cols + x0;
-          const i1 = y * an.cols + x1;
-          lum += (an.lum[i0] ?? 0) * (1 - t) + (an.lum[i1] ?? 0) * t;
-          rs += (an.r[i0] ?? 0) * (1 - t) + (an.r[i1] ?? 0) * t;
-          gs += (an.g[i0] ?? 0) * (1 - t) + (an.g[i1] ?? 0) * t;
-          bs += (an.b[i0] ?? 0) * (1 - t) + (an.b[i1] ?? 0) * t;
-          cnt++;
+          const row = y * an.cols;
+          for (let x = xFrom; x <= xTo; x++) {
+            const i = row + x;
+            const l = an.lum[i] ?? 0;
+            lum += l; lum2 += l * l;
+            rs += an.r[i] ?? 0; gs += an.g[i] ?? 0; bs += an.b[i] ?? 0;
+            dt += an.det[i] ?? 0; st += an.sat[i] ?? 0;
+            cnt++;
+          }
         }
         if (cnt === 0) continue;
-        lum /= cnt; rs /= cnt; gs /= cnt; bs /= cnt;
+        lum /= cnt; lum2 /= cnt; rs /= cnt; gs /= cnt; bs /= cnt; dt /= cnt; st /= cnt;
+        const variance = Math.max(0, lum2 - lum * lum);
 
         const above = lum <= minL ? 0 : (lum - minL) / Math.max(0.001, 1 - minL);
-        // мягкая кривая громкости + компенсация по числу голосов
-        const target = Math.pow(above, 1.6) * s.volume * (2.2 / Math.sqrt(bands));
+        // контраст из настроек управляет кривой громкости
+        const target = Math.pow(above, Math.max(0.4, s.contrast)) * s.volume * (2.2 / Math.sqrt(bands));
 
         const v = voices[b]!;
-        v.level = v.level * 0.75 + target * 0.25;
-        v.gain.gain.setTargetAtTime(Math.max(0.00005, v.level), now, 0.06);
+        v.level = v.level * smooth + target * (1 - smooth);
+        v.gain.gain.setTargetAtTime(Math.max(0.00005, v.level), now, glide);
 
-        // тембр: тёплые цвета — темнее фильтр, холодные — ярче
+        // тембр: тёплые цвета — темнее фильтр, холодные — ярче; насыщенность добавляет блеск
         const warmth = (bs - rs) / 255; // -1..1
-        const cutoff = Math.min(12000, Math.max(220, s.filterFreq * Math.pow(2, warmth * 1.2 + above * 0.8)));
+        const cutoff = Math.min(14000, Math.max(200, s.filterFreq * Math.pow(2, warmth * 1.2 + above * 0.8 + st * 0.6)));
         v.filter.frequency.setTargetAtTime(cutoff, now, 0.08);
+        v.filter.Q.setTargetAtTime(Math.min(18, Math.max(0.1, s.filterQ * (0.6 + st))), now, 0.12);
+
+        // текстура: края и разброс яркости → полосовой шум
+        const texture = Math.min(1, dt * 1.5 + Math.sqrt(variance) * 2.5);
+        const nTarget = texture * above * s.detail * s.volume * (1.6 / Math.sqrt(bands));
+        v.noiseLevel = v.noiseLevel * smooth + nTarget * (1 - smooth);
+        v.noiseGain.gain.setTargetAtTime(Math.max(0.00005, v.noiseLevel), now, glide);
+        v.noiseFilter.frequency.setTargetAtTime(
+          Math.min(15000, v.baseFreq * (2 + texture * 6)),
+          now,
+          0.1,
+        );
       }
     },
     [],
