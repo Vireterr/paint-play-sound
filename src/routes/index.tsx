@@ -506,42 +506,60 @@ function Index() {
       const bands = voices.length;
       const now = ctx.currentTime;
 
-      // сглаживание по колонкам: небольшое окно вокруг текущей позиции
+      // Окно сканирования: «Шаг сканирования» задаёт ширину читаемой полосы пикселей
       const xf = Math.min(an.cols - 1, Math.max(0, progress * (an.cols - 1)));
-      const x0 = Math.floor(xf);
-      const x1 = Math.min(an.cols - 1, x0 + 1);
-      const t = xf - x0;
+      const half = Math.max(0, Math.round((s.scanStep - 1) / 2));
+      const xFrom = Math.max(0, Math.round(xf) - half);
+      const xTo = Math.min(an.cols - 1, Math.round(xf) + half);
       const rowsPerBand = an.rows / bands;
       const minL = s.minBrightness / 255;
+      // реакция сглаживания: мелкий шаг = быстрее и детальнее
+      const smooth = Math.min(0.9, 0.45 + s.scanStep * 0.02);
+      const glide = Math.max(0.02, 0.02 + s.scanStep * 0.006);
 
       for (let b = 0; b < bands; b++) {
         const yStart = Math.floor(b * rowsPerBand);
         const yEnd = Math.max(yStart + 1, Math.floor((b + 1) * rowsPerBand));
-        let lum = 0, rs = 0, gs = 0, bs = 0, cnt = 0;
+        let lum = 0, lum2 = 0, rs = 0, gs = 0, bs = 0, dt = 0, st = 0, cnt = 0;
         for (let y = yStart; y < yEnd; y++) {
-          const i0 = y * an.cols + x0;
-          const i1 = y * an.cols + x1;
-          lum += (an.lum[i0] ?? 0) * (1 - t) + (an.lum[i1] ?? 0) * t;
-          rs += (an.r[i0] ?? 0) * (1 - t) + (an.r[i1] ?? 0) * t;
-          gs += (an.g[i0] ?? 0) * (1 - t) + (an.g[i1] ?? 0) * t;
-          bs += (an.b[i0] ?? 0) * (1 - t) + (an.b[i1] ?? 0) * t;
-          cnt++;
+          const row = y * an.cols;
+          for (let x = xFrom; x <= xTo; x++) {
+            const i = row + x;
+            const l = an.lum[i] ?? 0;
+            lum += l; lum2 += l * l;
+            rs += an.r[i] ?? 0; gs += an.g[i] ?? 0; bs += an.b[i] ?? 0;
+            dt += an.det[i] ?? 0; st += an.sat[i] ?? 0;
+            cnt++;
+          }
         }
         if (cnt === 0) continue;
-        lum /= cnt; rs /= cnt; gs /= cnt; bs /= cnt;
+        lum /= cnt; lum2 /= cnt; rs /= cnt; gs /= cnt; bs /= cnt; dt /= cnt; st /= cnt;
+        const variance = Math.max(0, lum2 - lum * lum);
 
         const above = lum <= minL ? 0 : (lum - minL) / Math.max(0.001, 1 - minL);
-        // мягкая кривая громкости + компенсация по числу голосов
-        const target = Math.pow(above, 1.6) * s.volume * (2.2 / Math.sqrt(bands));
+        // контраст из настроек управляет кривой громкости
+        const target = Math.pow(above, Math.max(0.4, s.contrast)) * s.volume * (2.2 / Math.sqrt(bands));
 
         const v = voices[b]!;
-        v.level = v.level * 0.75 + target * 0.25;
-        v.gain.gain.setTargetAtTime(Math.max(0.00005, v.level), now, 0.06);
+        v.level = v.level * smooth + target * (1 - smooth);
+        v.gain.gain.setTargetAtTime(Math.max(0.00005, v.level), now, glide);
 
-        // тембр: тёплые цвета — темнее фильтр, холодные — ярче
+        // тембр: тёплые цвета — темнее фильтр, холодные — ярче; насыщенность добавляет блеск
         const warmth = (bs - rs) / 255; // -1..1
-        const cutoff = Math.min(12000, Math.max(220, s.filterFreq * Math.pow(2, warmth * 1.2 + above * 0.8)));
+        const cutoff = Math.min(14000, Math.max(200, s.filterFreq * Math.pow(2, warmth * 1.2 + above * 0.8 + st * 0.6)));
         v.filter.frequency.setTargetAtTime(cutoff, now, 0.08);
+        v.filter.Q.setTargetAtTime(Math.min(18, Math.max(0.1, s.filterQ * (0.6 + st))), now, 0.12);
+
+        // текстура: края и разброс яркости → полосовой шум
+        const texture = Math.min(1, dt * 1.5 + Math.sqrt(variance) * 2.5);
+        const nTarget = texture * above * s.detail * s.volume * (1.6 / Math.sqrt(bands));
+        v.noiseLevel = v.noiseLevel * smooth + nTarget * (1 - smooth);
+        v.noiseGain.gain.setTargetAtTime(Math.max(0.00005, v.noiseLevel), now, glide);
+        v.noiseFilter.frequency.setTargetAtTime(
+          Math.min(15000, v.baseFreq * (2 + texture * 6)),
+          now,
+          0.1,
+        );
       }
     },
     [],
