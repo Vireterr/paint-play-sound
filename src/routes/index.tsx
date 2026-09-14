@@ -464,12 +464,27 @@ function Index() {
       const pan = ctx.createStereoPanner();
       pan.pan.value = s.bands > 1 ? ((b / (s.bands - 1)) * 1.4 - 0.7) : 0;
 
+      // Текстурный слой: мелкие детали изображения → полосовой шум на частоте голоса
+      const noiseSrc = ctx.createBufferSource();
+      noiseSrc.buffer = noiseBufferRef.current!;
+      noiseSrc.loop = true;
+      noiseSrc.start(now);
+      const noiseFilter = ctx.createBiquadFilter();
+      noiseFilter.type = "bandpass";
+      noiseFilter.frequency.value = freq * 2;
+      noiseFilter.Q.value = 6;
+      const noiseGain = ctx.createGain();
+      noiseGain.gain.value = 0.0001;
+      noiseSrc.connect(noiseFilter);
+      noiseFilter.connect(noiseGain);
+      noiseGain.connect(pan);
+
       src.connect(filter);
       filter.connect(gain);
       gain.connect(pan);
       pan.connect(bus);
 
-      voices.push({ osc: src, gain, filter, pan, level: 0 });
+      voices.push({ osc: src, gain, filter, pan, level: 0, noiseGain, noiseFilter, baseFreq: freq, noiseLevel: 0 });
     }
     sonVoicesRef.current = voices;
   }, [ensureAudio, teardownSonVoices]);
