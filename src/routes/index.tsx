@@ -596,12 +596,7 @@ function Index() {
         }
 
         if (imageSonification && bgImage) {
-          const currentX = Math.floor(x);
-          const step = sonSettingsRef.current.scanStep;
-          if (currentX !== lastSonifyXRef.current && currentX % step === 0) {
-            sonifyColumn(currentX);
-            lastSonifyXRef.current = currentX;
-          }
+          updateSonification(x / Math.max(1, w));
         }
       }
 
