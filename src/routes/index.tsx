@@ -172,7 +172,7 @@ function Index() {
   const noiseBufferRef = useRef<AudioBuffer | null>(null);
 
   const [presets, setPresets] = useState<SoundPreset[]>(DEFAULT_PRESETS);
-  const [currentPresetId, setCurrentPresetId] = useState(DEFAULT_PRESETS[0].id);
+  const [currentPresetId, setCurrentPresetId] = useState(DEFAULT_PRESETS[0]!.id);
   const [showSettings, setShowSettings] = useState(false);
 
   const [bgImage, setBgImage] = useState<HTMLImageElement | null>(null);
@@ -201,7 +201,7 @@ function Index() {
   const sonSettingsRef = useRef(sonSettings);
   useEffect(() => { sonSettingsRef.current = sonSettings; }, [sonSettings]);
 
-  const currentPreset = presets.find(p => p.id === currentPresetId) ?? presets[0];
+  const currentPreset = presets.find(p => p.id === currentPresetId) ?? presets[0] ?? DEFAULT_PRESETS[0]!;
 
   const ensureAudio = useCallback(() => {
     if (!audioRef.current) {
@@ -598,6 +598,12 @@ function Index() {
         if (imageSonification && bgImage) {
           updateSonification(x / Math.max(1, w));
         }
+      } else if (sonVoicesRef.current && audioRef.current) {
+        const nowT = audioRef.current.currentTime;
+        for (const v of sonVoicesRef.current) {
+          v.level = 0;
+          v.gain.gain.setTargetAtTime(0.00005, nowT, 0.05);
+        }
       }
 
       for (const s of strokesRef.current) drawStrokePixelated(s);
@@ -652,7 +658,7 @@ function Index() {
       cancelAnimationFrame(raf);
       window.removeEventListener("resize", resize);
     };
-  }, [playNote, bgImage, imageSonification, sonifyColumn]);
+  }, [playNote, bgImage, imageSonification, updateSonification]);
 
   const pos = (e: React.PointerEvent<HTMLCanvasElement>): Pt => {
     const r = e.currentTarget.getBoundingClientRect();
@@ -795,7 +801,7 @@ function Index() {
     if (presets.length <= 1) return;
     const newPresets = presets.filter(p => p.id !== id);
     setPresets(newPresets);
-    if (currentPresetId === id) setCurrentPresetId(newPresets[0].id);
+    if (currentPresetId === id) setCurrentPresetId(newPresets[0]!.id);
   };
 
   const updatePreset = (id: string, updates: Partial<SoundPreset>) => {
