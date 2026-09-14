@@ -45,6 +45,8 @@ type SonificationSettings = {
   delayTime: number;
   delayFeedback: number;
   minBrightness: number;
+  detail: number; // 0..1 — количество текстуры/шума от мелких деталей
+  contrast: number; // 0.5..3 — контраст яркости → громкость
 };
 
 type Stroke = {
