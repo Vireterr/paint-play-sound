@@ -312,153 +312,198 @@ function Index() {
     [ensureAudio],
   );
 
-  const sonifyColumn = useCallback(
-    (canvasX: number) => {
-      if (!bgImage || !imageSonification) return;
-      const canvas = canvasRef.current;
-      if (!canvas) return;
+  // ---- Качественная сонификация изображения: предрасчёт + непрерывный банк голосов ----
+  const analysisRef = useRef<{ cols: number; rows: number; lum: Float32Array; r: Float32Array; g: Float32Array; b: Float32Array } | null>(null);
 
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return;
+  useEffect(() => {
+    if (!bgImage) { analysisRef.current = null; return; }
+    const COLS = 512;
+    const ROWS = 128;
+    const off = document.createElement("canvas");
+    off.width = COLS;
+    off.height = ROWS;
+    const octx = off.getContext("2d", { willReadFrequently: true })!;
+    octx.drawImage(bgImage, 0, 0, COLS, ROWS);
+    const d = octx.getImageData(0, 0, COLS, ROWS).data;
+    const n = COLS * ROWS;
+    const lum = new Float32Array(n), rr = new Float32Array(n), gg = new Float32Array(n), bb = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const o = i * 4;
+      const a = (d[o + 3] ?? 255) / 255;
+      const r = (d[o] ?? 0) * a, g = (d[o + 1] ?? 0) * a, b = (d[o + 2] ?? 0) * a;
+      rr[i] = r; gg[i] = g; bb[i] = b;
+      lum[i] = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+    }
+    analysisRef.current = { cols: COLS, rows: ROWS, lum, r: rr, g: gg, b: bb };
+  }, [bgImage]);
 
-      const w = canvas.clientWidth;
-      const h = canvas.clientHeight;
+  type SonVoice = { osc: AudioNode; gain: GainNode; filter: BiquadFilterNode; pan: StereoPannerNode; level: number };
+  const sonVoicesRef = useRef<SonVoice[] | null>(null);
+  const sonBusRef = useRef<GainNode | null>(null);
 
-      const offCanvas = document.createElement("canvas");
-      offCanvas.width = w;
-      offCanvas.height = h;
-      const offCtx = offCanvas.getContext("2d")!;
-      offCtx.drawImage(bgImage, 0, 0, w, h);
+  const teardownSonVoices = useCallback(() => {
+    const voices = sonVoicesRef.current;
+    if (voices) {
+      for (const v of voices) {
+        try {
+          v.gain.gain.cancelScheduledValues(0);
+          v.gain.gain.value = 0;
+          (v.osc as OscillatorNode).stop?.();
+        } catch { /* noop */ }
+        try { v.pan.disconnect(); } catch { /* noop */ }
+      }
+    }
+    sonVoicesRef.current = null;
+    try { sonBusRef.current?.disconnect(); } catch { /* noop */ }
+    sonBusRef.current = null;
+  }, []);
 
-      const imgData = offCtx.getImageData(canvasX, 0, 1, h);
-      const data = imgData.data;
+  const buildSonVoices = useCallback(() => {
+    const ctx = ensureAudio();
+    const master = masterRef.current;
+    if (!master) return;
+    teardownSonVoices();
 
-      const audioCtx = ensureAudio();
-      const master = masterRef.current;
-      if (!master) return;
+    const s = sonSettingsRef.current;
+    const bus = ctx.createGain();
+    bus.gain.value = 1;
+    const comp = ctx.createDynamicsCompressor();
+    comp.threshold.value = -18;
+    comp.knee.value = 24;
+    comp.ratio.value = 6;
+    comp.attack.value = 0.01;
+    comp.release.value = 0.25;
+    bus.connect(comp);
+    comp.connect(master);
 
-      const settings = sonSettingsRef.current;
-      const BANDS = settings.bands;
-      const bandHeight = Math.floor(h / BANDS);
-      const now = audioCtx.currentTime;
-      const dur = 0.12;
+    if (s.delayTime > 0 && s.delayFeedback > 0) {
+      const delay = ctx.createDelay(1.5);
+      delay.delayTime.value = s.delayTime;
+      const fb = ctx.createGain();
+      fb.gain.value = Math.min(0.7, s.delayFeedback);
+      const wet = ctx.createGain();
+      wet.gain.value = 0.35;
+      bus.connect(delay);
+      delay.connect(fb);
+      fb.connect(delay);
+      delay.connect(wet);
+      wet.connect(comp);
+    }
+    sonBusRef.current = bus;
 
-      // Базовая частота от октавы
-      const baseFreqs: Record<number, number> = {
-        2: 65.41,  // C2
-        3: 130.81, // C3
-        4: 261.63, // C4
-        5: 523.25, // C5
-      };
-      const baseFreq = baseFreqs[settings.baseOctave] ?? 130.81;
+    // Приятная пентатоника, снизу вверх
+    const PENTA = [0, 3, 5, 7, 10];
+    const baseFreqs: Record<number, number> = { 2: 65.41, 3: 130.81, 4: 261.63, 5: 523.25 };
+    const baseFreq = baseFreqs[s.baseOctave] ?? 130.81;
+    const now = ctx.currentTime;
+    const voices: SonVoice[] = [];
 
-      for (let b = 0; b < BANDS; b++) {
-        let totalBrightness = 0;
-        let totalR = 0, totalG = 0, totalB = 0;
-        let pixelCount = 0;
+    for (let b = 0; b < s.bands; b++) {
+      const degree = s.bands - 1 - b; // верхняя полоса = высокая нота
+      const semi = (PENTA[degree % 5] ?? 0) + 12 * Math.floor(degree / 5);
+      const freq = baseFreq * Math.pow(2, semi / 12);
 
-        for (let y = b * bandHeight; y < (b + 1) * bandHeight && y < h; y++) {
-          const idx = y * 4;
-          const r = data[idx]!;
-          const g = data[idx + 1]!;
-          const bl = data[idx + 2]!;
-          const alpha = data[idx + 3]!;
-          
-          if (alpha < 30) continue;
-          
-          const brightness = (r + g + bl) / 3;
-          totalBrightness += brightness;
-          totalR += r;
-          totalG += g;
-          totalB += bl;
-          pixelCount++;
+      const type: OscType = s.oscType === "auto" ? (b % 2 === 0 ? "triangle" : "sine") : s.oscType;
+      let src: AudioNode;
+      if (type === "noise") {
+        const noise = ctx.createBufferSource();
+        noise.buffer = noiseBufferRef.current!;
+        noise.loop = true;
+        noise.start(now);
+        src = noise;
+      } else if (type === "pulse") {
+        const osc = ctx.createOscillator();
+        osc.setPeriodicWave(createPulseWave(ctx, 0.35));
+        osc.frequency.value = freq;
+        osc.detune.value = (b % 2 === 0 ? 4 : -4);
+        osc.start(now);
+        src = osc;
+      } else {
+        const osc = ctx.createOscillator();
+        osc.type = type as OscillatorType;
+        osc.frequency.value = freq;
+        osc.detune.value = (b % 2 === 0 ? 4 : -4);
+        osc.start(now);
+        src = osc;
+      }
+
+      const filter = ctx.createBiquadFilter();
+      filter.type = "lowpass";
+      filter.frequency.value = Math.max(freq * 2, s.filterFreq);
+      filter.Q.value = Math.min(6, s.filterQ);
+
+      const gain = ctx.createGain();
+      gain.gain.value = 0.0001;
+
+      const pan = ctx.createStereoPanner();
+      pan.pan.value = s.bands > 1 ? ((b / (s.bands - 1)) * 1.4 - 0.7) : 0;
+
+      src.connect(filter);
+      filter.connect(gain);
+      gain.connect(pan);
+      pan.connect(bus);
+
+      voices.push({ osc: src, gain, filter, pan, level: 0 });
+    }
+    sonVoicesRef.current = voices;
+  }, [ensureAudio, teardownSonVoices]);
+
+  useEffect(() => {
+    if (bgImage && imageSonification) buildSonVoices();
+    else teardownSonVoices();
+    return () => { if (!bgImage || !imageSonification) teardownSonVoices(); };
+  }, [bgImage, imageSonification, buildSonVoices, teardownSonVoices, sonSettings.bands, sonSettings.oscType, sonSettings.baseOctave, sonSettings.delayTime, sonSettings.delayFeedback]);
+
+  // Плавное обновление голосов по позиции сканера (0..1)
+  const updateSonification = useCallback(
+    (progress: number) => {
+      const an = analysisRef.current;
+      const voices = sonVoicesRef.current;
+      const ctx = audioRef.current;
+      if (!an || !voices || !ctx) return;
+      const s = sonSettingsRef.current;
+      const bands = voices.length;
+      const now = ctx.currentTime;
+
+      // сглаживание по колонкам: небольшое окно вокруг текущей позиции
+      const xf = Math.min(an.cols - 1, Math.max(0, progress * (an.cols - 1)));
+      const x0 = Math.floor(xf);
+      const x1 = Math.min(an.cols - 1, x0 + 1);
+      const t = xf - x0;
+      const rowsPerBand = an.rows / bands;
+      const minL = s.minBrightness / 255;
+
+      for (let b = 0; b < bands; b++) {
+        const yStart = Math.floor(b * rowsPerBand);
+        const yEnd = Math.max(yStart + 1, Math.floor((b + 1) * rowsPerBand));
+        let lum = 0, rs = 0, gs = 0, bs = 0, cnt = 0;
+        for (let y = yStart; y < yEnd; y++) {
+          const i0 = y * an.cols + x0;
+          const i1 = y * an.cols + x1;
+          lum += (an.lum[i0] ?? 0) * (1 - t) + (an.lum[i1] ?? 0) * t;
+          rs += (an.r[i0] ?? 0) * (1 - t) + (an.r[i1] ?? 0) * t;
+          gs += (an.g[i0] ?? 0) * (1 - t) + (an.g[i1] ?? 0) * t;
+          bs += (an.b[i0] ?? 0) * (1 - t) + (an.b[i1] ?? 0) * t;
+          cnt++;
         }
+        if (cnt === 0) continue;
+        lum /= cnt; rs /= cnt; gs /= cnt; bs /= cnt;
 
-        if (pixelCount === 0) continue;
+        const above = lum <= minL ? 0 : (lum - minL) / Math.max(0.001, 1 - minL);
+        // мягкая кривая громкости + компенсация по числу голосов
+        const target = Math.pow(above, 1.6) * s.volume * (2.2 / Math.sqrt(bands));
 
-        const avgBrightness = totalBrightness / pixelCount;
-        const avgR = totalR / pixelCount;
-        const avgG = totalG / pixelCount;
-        const avgB = totalB / pixelCount;
+        const v = voices[b]!;
+        v.level = v.level * 0.75 + target * 0.25;
+        v.gain.gain.setTargetAtTime(Math.max(0.00005, v.level), now, 0.06);
 
-        if (avgBrightness < settings.minBrightness) continue;
-
-        const noteIdx = Math.round((1 - avgBrightness / 255) * (SCALE.length - 1));
-        const semitone = SCALE[Math.max(0, Math.min(SCALE.length - 1, noteIdx))] ?? 0;
-        const freq = baseFreq * Math.pow(2, semitone / 12);
-
-        const vol = (avgBrightness / 255) * settings.volume;
-
-        let oscType: OscillatorType;
-        if (settings.oscType === "auto") {
-          if (avgR > avgG && avgR > avgB) oscType = "sawtooth";
-          else if (avgG > avgR && avgG > avgB) oscType = "triangle";
-          else if (avgB > avgR && avgB > avgG) oscType = "square";
-          else oscType = "sine";
-        } else {
-          oscType = settings.oscType;
-        }
-
-        let sourceNode: AudioNode;
-        if (oscType === "noise") {
-          const noise = audioCtx.createBufferSource();
-          noise.buffer = noiseBufferRef.current!;
-          noise.loop = true;
-          sourceNode = noise;
-          noise.start(now);
-          noise.stop(now + dur + 0.05);
-        } else if (oscType === "pulse") {
-          const osc = audioCtx.createOscillator();
-          osc.setPeriodicWave(createPulseWave(audioCtx, 0.5));
-          osc.frequency.setValueAtTime(freq, now);
-          sourceNode = osc;
-          osc.start(now);
-          osc.stop(now + dur + 0.05);
-        } else {
-          const osc = audioCtx.createOscillator();
-          osc.type = oscType;
-          osc.frequency.setValueAtTime(freq, now);
-          sourceNode = osc;
-          osc.start(now);
-          osc.stop(now + dur + 0.05);
-        }
-
-        const filter = audioCtx.createBiquadFilter();
-        filter.type = "lowpass";
-        filter.frequency.setValueAtTime(settings.filterFreq, now);
-        filter.Q.value = settings.filterQ;
-
-        const gain = audioCtx.createGain();
-        gain.gain.setValueAtTime(0.0001, now);
-        gain.gain.exponentialRampToValueAtTime(vol, now + 0.01);
-        gain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
-
-        const pan = audioCtx.createStereoPanner();
-        pan.pan.value = (b / BANDS) * 2 - 1;
-
-        let delayNode: DelayNode | null = null;
-        let feedbackNode: GainNode | null = null;
-        if (settings.delayTime > 0 && settings.delayFeedback > 0) {
-          delayNode = audioCtx.createDelay(1.5);
-          delayNode.delayTime.value = settings.delayTime;
-          feedbackNode = audioCtx.createGain();
-          feedbackNode.gain.value = settings.delayFeedback;
-          delayNode.connect(feedbackNode);
-          feedbackNode.connect(delayNode);
-        }
-
-        sourceNode.connect(filter);
-        filter.connect(gain);
-        gain.connect(pan);
-        pan.connect(master);
-
-        if (delayNode && feedbackNode) {
-          gain.connect(delayNode);
-          delayNode.connect(master);
-        }
+        // тембр: тёплые цвета — темнее фильтр, холодные — ярче
+        const warmth = (bs - rs) / 255; // -1..1
+        const cutoff = Math.min(12000, Math.max(220, s.filterFreq * Math.pow(2, warmth * 1.2 + above * 0.8)));
+        v.filter.frequency.setTargetAtTime(cutoff, now, 0.08);
       }
     },
-    [bgImage, imageSonification, ensureAudio],
+    [],
   );
 
   useEffect(() => {
