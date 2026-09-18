@@ -569,24 +569,27 @@ function Index() {
       const now = ctx.currentTime;
 
       // Окно сканирования: «Шаг сканирования» задаёт ширину читаемой полосы пикселей
-      const xf = Math.min(an.cols - 1, Math.max(0, progress * (an.cols - 1)));
+      const vertical = s.scanAxis === "v";
+      const scanLen = vertical ? an.rows : an.cols;   // вдоль движения сканера
+      const bandLen = vertical ? an.cols : an.rows;   // делится на полосы
+      const sf = Math.min(scanLen - 1, Math.max(0, progress * (scanLen - 1)));
       const half = Math.max(0, Math.round((s.scanStep - 1) / 2));
-      const xFrom = Math.max(0, Math.round(xf) - half);
-      const xTo = Math.min(an.cols - 1, Math.round(xf) + half);
-      const rowsPerBand = an.rows / bands;
+      const sFrom = Math.max(0, Math.round(sf) - half);
+      const sTo = Math.min(scanLen - 1, Math.round(sf) + half);
+      const perBand = bandLen / bands;
       const minL = s.minBrightness / 255;
-      // реакция сглаживания: мелкий шаг = быстрее и детальнее
-      const smooth = Math.min(0.9, 0.45 + s.scanStep * 0.02);
-      const glide = Math.max(0.02, 0.02 + s.scanStep * 0.006);
+      // реакция: ползунок + ширина окна
+      const resp = Math.min(1, Math.max(0, s.response));
+      const smooth = Math.min(0.95, Math.max(0.05, (0.45 + s.scanStep * 0.02) * (1.25 - resp)));
+      const glide = Math.max(0.008, (0.02 + s.scanStep * 0.006) * (1.3 - resp));
 
       for (let b = 0; b < bands; b++) {
-        const yStart = Math.floor(b * rowsPerBand);
-        const yEnd = Math.max(yStart + 1, Math.floor((b + 1) * rowsPerBand));
+        const kStart = Math.floor(b * perBand);
+        const kEnd = Math.max(kStart + 1, Math.floor((b + 1) * perBand));
         let lum = 0, lum2 = 0, rs = 0, gs = 0, bs = 0, dt = 0, st = 0, cnt = 0;
-        for (let y = yStart; y < yEnd; y++) {
-          const row = y * an.cols;
-          for (let x = xFrom; x <= xTo; x++) {
-            const i = row + x;
+        for (let k = kStart; k < kEnd; k++) {
+          for (let p = sFrom; p <= sTo; p++) {
+            const i = vertical ? p * an.cols + k : k * an.cols + p;
             const l = an.lum[i] ?? 0;
             lum += l; lum2 += l * l;
             rs += an.r[i] ?? 0; gs += an.g[i] ?? 0; bs += an.b[i] ?? 0;
@@ -598,7 +601,8 @@ function Index() {
         lum /= cnt; lum2 /= cnt; rs /= cnt; gs /= cnt; bs /= cnt; dt /= cnt; st /= cnt;
         const variance = Math.max(0, lum2 - lum * lum);
 
-        const above = lum <= minL ? 0 : (lum - minL) / Math.max(0.001, 1 - minL);
+        const lv = s.invert ? 1 - lum : lum;
+        const above = lv <= minL ? 0 : (lv - minL) / Math.max(0.001, 1 - minL);
         // контраст из настроек управляет кривой громкости
         const target = Math.pow(above, Math.max(0.4, s.contrast)) * s.volume * (2.2 / Math.sqrt(bands));
 
@@ -612,6 +616,20 @@ function Index() {
         v.filter.frequency.setTargetAtTime(cutoff, now, 0.08);
         v.filter.Q.setTargetAtTime(Math.min(18, Math.max(0.1, s.filterQ * (0.6 + st))), now, 0.12);
 
+        // цвет → микротональный сдвиг высоты
+        if (v.oscNode) {
+          const cents = ((gs - (rs + bs) / 2) / 255) * 100 * s.colorPitch;
+          const dtn = (b % 2 === 0 ? 1 : -1) * s.detune + cents;
+          v.oscNode.detune.setTargetAtTime(dtn, now, 0.12);
+        }
+
+        // панорама слегка «дышит» от насыщенности цвета
+        v.pan.pan.setTargetAtTime(
+          Math.max(-1, Math.min(1, v.basePan + (st - 0.5) * 0.3 * s.stereoWidth)),
+          now,
+          0.15,
+        );
+
         // текстура: края и разброс яркости → полосовой шум
         const texture = Math.min(1, dt * 1.5 + Math.sqrt(variance) * 2.5);
         const nTarget = texture * above * s.detail * s.volume * (1.6 / Math.sqrt(bands));
@@ -623,6 +641,7 @@ function Index() {
           0.1,
         );
       }
+
     },
     [],
   );
