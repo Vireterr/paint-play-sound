@@ -1260,6 +1260,56 @@ function Index() {
                     <label className="text-xs text-muted-foreground">Обратная связь: {Math.round(sonSettings.delayFeedback * 100)}%</label>
                     <input type="range" min={0} max={90} step={5} value={sonSettings.delayFeedback * 100} onChange={(e) => updateSonSettings({ delayFeedback: Number(e.target.value) / 100 })} />
                   </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs text-muted-foreground">Лад</label>
+                    <select value={sonSettings.scale} onChange={(e) => updateSonSettings({ scale: e.target.value as ScaleId })} className="rounded border border-border bg-background px-2 py-1 text-sm">
+                      {(Object.keys(SCALES) as ScaleId[]).map((k) => (
+                        <option key={k} value={k}>{SCALE_LABELS[k]}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs text-muted-foreground">Диапазон: {sonSettings.octaveRange} окт.</label>
+                    <input type="range" min={1} max={4} step={1} value={sonSettings.octaveRange} onChange={(e) => updateSonSettings({ octaveRange: Number(e.target.value) })} />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs text-muted-foreground">Направление сканирования</label>
+                    <select value={sonSettings.scanAxis} onChange={(e) => updateSonSettings({ scanAxis: e.target.value as "h" | "v" })} className="rounded border border-border bg-background px-2 py-1 text-sm">
+                      <option value="h">Слева направо</option>
+                      <option value="v">Сверху вниз</option>
+                    </select>
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs text-muted-foreground">Инверсия яркости</label>
+                    <button
+                      type="button"
+                      onClick={() => updateSonSettings({ invert: !sonSettings.invert })}
+                      className={`rounded border px-2 py-1 text-sm ${sonSettings.invert ? "border-primary bg-primary/15 text-primary" : "border-border bg-background"}`}
+                    >
+                      {sonSettings.invert ? "Тёмное = громче" : "Светлое = громче"}
+                    </button>
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs text-muted-foreground">Стерео: {Math.round(sonSettings.stereoWidth * 100)}%</label>
+                    <input type="range" min={0} max={100} step={5} value={sonSettings.stereoWidth * 100} onChange={(e) => updateSonSettings({ stereoWidth: Number(e.target.value) / 100 })} />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs text-muted-foreground">Скорость реакции: {Math.round(sonSettings.response * 100)}%</label>
+                    <input type="range" min={0} max={100} step={5} value={sonSettings.response * 100} onChange={(e) => updateSonSettings({ response: Number(e.target.value) / 100 })} />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs text-muted-foreground">Расстройка: {sonSettings.detune} ц.</label>
+                    <input type="range" min={0} max={50} step={1} value={sonSettings.detune} onChange={(e) => updateSonSettings({ detune: Number(e.target.value) })} />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs text-muted-foreground">Насыщение: {Math.round(sonSettings.drive * 100)}%</label>
+                    <input type="range" min={0} max={100} step={5} value={sonSettings.drive * 100} onChange={(e) => updateSonSettings({ drive: Number(e.target.value) / 100 })} />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs text-muted-foreground">Цвет → высота: {Math.round(sonSettings.colorPitch * 100)}%</label>
+                    <input type="range" min={0} max={100} step={5} value={sonSettings.colorPitch * 100} onChange={(e) => updateSonSettings({ colorPitch: Number(e.target.value) / 100 })} />
+                  </div>
+
                 </div>
               </div>
             )}
