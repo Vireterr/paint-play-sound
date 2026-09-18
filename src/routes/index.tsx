@@ -460,20 +460,27 @@ function Index() {
     }
     sonBusRef.current = bus;
 
-    // Приятная пентатоника, снизу вверх
-    const PENTA = [0, 3, 5, 7, 10];
+    // Лад из настроек, снизу вверх
+    const scaleSteps = SCALES[s.scale] ?? SCALES.penta;
     const baseFreqs: Record<number, number> = { 2: 65.41, 3: 130.81, 4: 261.63, 5: 523.25 };
     const baseFreq = baseFreqs[s.baseOctave] ?? 130.81;
     const now = ctx.currentTime;
     const voices: SonVoice[] = [];
 
+    const semiOf = (deg: number) =>
+      (scaleSteps[deg % scaleSteps.length] ?? 0) + 12 * Math.floor(deg / scaleSteps.length);
+    const maxSemi = Math.max(1, semiOf(Math.max(1, s.bands - 1)));
+    const fit = (s.octaveRange * 12) / maxSemi;
+
     for (let b = 0; b < s.bands; b++) {
       const degree = s.bands - 1 - b; // верхняя полоса = высокая нота
-      const semi = (PENTA[degree % 5] ?? 0) + 12 * Math.floor(degree / 5);
+      const semi = semiOf(degree) * fit;
       const freq = baseFreq * Math.pow(2, semi / 12);
 
       const type: OscType = s.oscType === "auto" ? (b % 2 === 0 ? "triangle" : "sine") : s.oscType;
+      const spread = (b % 2 === 0 ? 1 : -1) * s.detune;
       let src: AudioNode;
+      let oscNode: OscillatorNode | null = null;
       if (type === "noise") {
         const noise = ctx.createBufferSource();
         noise.buffer = noiseBufferRef.current!;
@@ -484,16 +491,18 @@ function Index() {
         const osc = ctx.createOscillator();
         osc.setPeriodicWave(createPulseWave(ctx, 0.35));
         osc.frequency.value = freq;
-        osc.detune.value = (b % 2 === 0 ? 4 : -4);
+        osc.detune.value = spread;
         osc.start(now);
         src = osc;
+        oscNode = osc;
       } else {
         const osc = ctx.createOscillator();
         osc.type = type as OscillatorType;
         osc.frequency.value = freq;
-        osc.detune.value = (b % 2 === 0 ? 4 : -4);
+        osc.detune.value = spread;
         osc.start(now);
         src = osc;
+        oscNode = osc;
       }
 
       const filter = ctx.createBiquadFilter();
@@ -505,7 +514,8 @@ function Index() {
       gain.gain.value = 0.0001;
 
       const pan = ctx.createStereoPanner();
-      pan.pan.value = s.bands > 1 ? ((b / (s.bands - 1)) * 1.4 - 0.7) : 0;
+      const basePan = s.bands > 1 ? ((b / (s.bands - 1)) * 2 - 1) * s.stereoWidth : 0;
+      pan.pan.value = basePan;
 
       // Текстурный слой: мелкие детали изображения → полосовой шум на частоте голоса
       const noiseSrc = ctx.createBufferSource();
@@ -522,13 +532,22 @@ function Index() {
       noiseFilter.connect(noiseGain);
       noiseGain.connect(pan);
 
+      let tail: AudioNode = filter;
+      if (s.drive > 0) {
+        const shaper = ctx.createWaveShaper();
+        shaper.curve = makeDistortionCurve(s.drive * 40);
+        shaper.oversample = "2x";
+        filter.connect(shaper);
+        tail = shaper;
+      }
       src.connect(filter);
-      filter.connect(gain);
+      tail.connect(gain);
       gain.connect(pan);
       pan.connect(bus);
 
-      voices.push({ osc: src, gain, filter, pan, level: 0, noiseGain, noiseFilter, baseFreq: freq, noiseLevel: 0 });
+      voices.push({ osc: src, oscNode, gain, filter, pan, level: 0, noiseGain, noiseFilter, baseFreq: freq, noiseLevel: 0, basePan });
     }
+
     sonVoicesRef.current = voices;
   }, [ensureAudio, teardownSonVoices]);
 
