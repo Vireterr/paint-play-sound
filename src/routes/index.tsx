@@ -115,7 +115,17 @@ const DEFAULT_SONIFICATION: SonificationSettings = {
   minBrightness: 20,
   detail: 0.35,
   contrast: 1.4,
+  scale: "penta",
+  octaveRange: 2,
+  scanAxis: "h",
+  invert: false,
+  stereoWidth: 0.7,
+  response: 0.5,
+  detune: 4,
+  drive: 0,
+  colorPitch: 0,
 };
+
 
 function makeDistortionCurve(amount: number) {
   const k = typeof amount === "number" ? amount : 50;
