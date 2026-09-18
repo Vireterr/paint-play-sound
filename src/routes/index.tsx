@@ -1148,6 +1148,14 @@ function Index() {
                     <input type="range" min={0} max={30} step={1} value={sonSettings.volume * 100} onChange={(e) => updateSonSettings({ volume: Number(e.target.value) / 100 })} />
                   </div>
                   <div className="flex flex-col gap-1">
+                    <label className="text-xs text-muted-foreground">Детализация: {Math.round(sonSettings.detail * 100)}%</label>
+                    <input type="range" min={0} max={100} step={5} value={sonSettings.detail * 100} onChange={(e) => updateSonSettings({ detail: Number(e.target.value) / 100 })} />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs text-muted-foreground">Контраст: {sonSettings.contrast.toFixed(1)}×</label>
+                    <input type="range" min={0.5} max={3} step={0.1} value={sonSettings.contrast} onChange={(e) => updateSonSettings({ contrast: Number(e.target.value) })} />
+                  </div>
+                  <div className="flex flex-col gap-1">
                     <label className="text-xs text-muted-foreground">Шаг сканирования: {sonSettings.scanStep} px</label>
                     <input type="range" min={1} max={20} step={1} value={sonSettings.scanStep} onChange={(e) => updateSonSettings({ scanStep: Number(e.target.value) })} />
                   </div>
