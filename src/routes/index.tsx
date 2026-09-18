@@ -555,7 +555,7 @@ function Index() {
     if (bgImage && imageSonification) buildSonVoices();
     else teardownSonVoices();
     return () => { if (!bgImage || !imageSonification) teardownSonVoices(); };
-  }, [bgImage, imageSonification, buildSonVoices, teardownSonVoices, sonSettings.bands, sonSettings.oscType, sonSettings.baseOctave, sonSettings.delayTime, sonSettings.delayFeedback]);
+  }, [bgImage, imageSonification, buildSonVoices, teardownSonVoices, sonSettings.bands, sonSettings.oscType, sonSettings.baseOctave, sonSettings.delayTime, sonSettings.delayFeedback, sonSettings.scale, sonSettings.octaveRange, sonSettings.stereoWidth, sonSettings.detune, sonSettings.drive]);
 
   // Плавное обновление голосов по позиции сканера (0..1)
   const updateSonification = useCallback(
