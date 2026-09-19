@@ -34,8 +34,6 @@ type SoundPreset = {
   volume: number;
 };
 
-type ScaleId = "penta" | "major" | "minor" | "dorian" | "blues" | "whole" | "chromatic";
-
 type SonificationSettings = {
   bands: number;
   baseOctave: number; // 2-5 (C2-C5)
@@ -49,37 +47,7 @@ type SonificationSettings = {
   minBrightness: number;
   detail: number; // 0..1 — количество текстуры/шума от мелких деталей
   contrast: number; // 0.5..3 — контраст яркости → громкость
-  scale: ScaleId;
-  octaveRange: number; // 1..4 — сколько октав охватывают полосы
-  scanAxis: "h" | "v"; // направление сканирования
-  invert: boolean; // тёмное = громкое
-  stereoWidth: number; // 0..1
-  response: number; // 0..1 — скорость реакции
-  detune: number; // 0..50 центов разброса
-  drive: number; // 0..1 — насыщение/перегруз
-  colorPitch: number; // 0..1 — влияние цвета на высоту (микротон)
 };
-
-const SCALES: Record<ScaleId, number[]> = {
-  penta: [0, 3, 5, 7, 10],
-  major: [0, 2, 4, 5, 7, 9, 11],
-  minor: [0, 2, 3, 5, 7, 8, 10],
-  dorian: [0, 2, 3, 5, 7, 9, 10],
-  blues: [0, 3, 5, 6, 7, 10],
-  whole: [0, 2, 4, 6, 8, 10],
-  chromatic: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
-};
-
-const SCALE_LABELS: Record<ScaleId, string> = {
-  penta: "Пентатоника",
-  major: "Мажор",
-  minor: "Минор",
-  dorian: "Дорийский",
-  blues: "Блюз",
-  whole: "Целотонная",
-  chromatic: "Хроматика",
-};
-
 
 type Stroke = {
   pts: Pt[];
@@ -115,17 +83,7 @@ const DEFAULT_SONIFICATION: SonificationSettings = {
   minBrightness: 20,
   detail: 0.35,
   contrast: 1.4,
-  scale: "penta",
-  octaveRange: 2,
-  scanAxis: "h",
-  invert: false,
-  stereoWidth: 0.7,
-  response: 0.5,
-  detune: 4,
-  drive: 0,
-  colorPitch: 0,
 };
-
 
 function makeDistortionCurve(amount: number) {
   const k = typeof amount === "number" ? amount : 50;
@@ -403,10 +361,9 @@ function Index() {
   }, [bgImage]);
 
   type SonVoice = {
-    osc: AudioNode; oscNode: OscillatorNode | null; gain: GainNode; filter: BiquadFilterNode; pan: StereoPannerNode; level: number;
-    noiseGain: GainNode; noiseFilter: BiquadFilterNode; baseFreq: number; noiseLevel: number; basePan: number;
+    osc: AudioNode; gain: GainNode; filter: BiquadFilterNode; pan: StereoPannerNode; level: number;
+    noiseGain: GainNode; noiseFilter: BiquadFilterNode; baseFreq: number; noiseLevel: number;
   };
-
   const sonVoicesRef = useRef<SonVoice[] | null>(null);
   const sonBusRef = useRef<GainNode | null>(null);
 
@@ -460,27 +417,20 @@ function Index() {
     }
     sonBusRef.current = bus;
 
-    // Лад из настроек, снизу вверх
-    const scaleSteps = SCALES[s.scale] ?? SCALES.penta;
+    // Приятная пентатоника, снизу вверх
+    const PENTA = [0, 3, 5, 7, 10];
     const baseFreqs: Record<number, number> = { 2: 65.41, 3: 130.81, 4: 261.63, 5: 523.25 };
     const baseFreq = baseFreqs[s.baseOctave] ?? 130.81;
     const now = ctx.currentTime;
     const voices: SonVoice[] = [];
 
-    const semiOf = (deg: number) =>
-      (scaleSteps[deg % scaleSteps.length] ?? 0) + 12 * Math.floor(deg / scaleSteps.length);
-    const maxSemi = Math.max(1, semiOf(Math.max(1, s.bands - 1)));
-    const fit = (s.octaveRange * 12) / maxSemi;
-
     for (let b = 0; b < s.bands; b++) {
       const degree = s.bands - 1 - b; // верхняя полоса = высокая нота
-      const semi = semiOf(degree) * fit;
+      const semi = (PENTA[degree % 5] ?? 0) + 12 * Math.floor(degree / 5);
       const freq = baseFreq * Math.pow(2, semi / 12);
 
       const type: OscType = s.oscType === "auto" ? (b % 2 === 0 ? "triangle" : "sine") : s.oscType;
-      const spread = (b % 2 === 0 ? 1 : -1) * s.detune;
       let src: AudioNode;
-      let oscNode: OscillatorNode | null = null;
       if (type === "noise") {
         const noise = ctx.createBufferSource();
         noise.buffer = noiseBufferRef.current!;
@@ -491,18 +441,16 @@ function Index() {
         const osc = ctx.createOscillator();
         osc.setPeriodicWave(createPulseWave(ctx, 0.35));
         osc.frequency.value = freq;
-        osc.detune.value = spread;
+        osc.detune.value = (b % 2 === 0 ? 4 : -4);
         osc.start(now);
         src = osc;
-        oscNode = osc;
       } else {
         const osc = ctx.createOscillator();
         osc.type = type as OscillatorType;
         osc.frequency.value = freq;
-        osc.detune.value = spread;
+        osc.detune.value = (b % 2 === 0 ? 4 : -4);
         osc.start(now);
         src = osc;
-        oscNode = osc;
       }
 
       const filter = ctx.createBiquadFilter();
@@ -514,8 +462,7 @@ function Index() {
       gain.gain.value = 0.0001;
 
       const pan = ctx.createStereoPanner();
-      const basePan = s.bands > 1 ? ((b / (s.bands - 1)) * 2 - 1) * s.stereoWidth : 0;
-      pan.pan.value = basePan;
+      pan.pan.value = s.bands > 1 ? ((b / (s.bands - 1)) * 1.4 - 0.7) : 0;
 
       // Текстурный слой: мелкие детали изображения → полосовой шум на частоте голоса
       const noiseSrc = ctx.createBufferSource();
@@ -532,22 +479,13 @@ function Index() {
       noiseFilter.connect(noiseGain);
       noiseGain.connect(pan);
 
-      let tail: AudioNode = filter;
-      if (s.drive > 0) {
-        const shaper = ctx.createWaveShaper();
-        shaper.curve = makeDistortionCurve(s.drive * 40);
-        shaper.oversample = "2x";
-        filter.connect(shaper);
-        tail = shaper;
-      }
       src.connect(filter);
-      tail.connect(gain);
+      filter.connect(gain);
       gain.connect(pan);
       pan.connect(bus);
 
-      voices.push({ osc: src, oscNode, gain, filter, pan, level: 0, noiseGain, noiseFilter, baseFreq: freq, noiseLevel: 0, basePan });
+      voices.push({ osc: src, gain, filter, pan, level: 0, noiseGain, noiseFilter, baseFreq: freq, noiseLevel: 0 });
     }
-
     sonVoicesRef.current = voices;
   }, [ensureAudio, teardownSonVoices]);
 
@@ -555,7 +493,7 @@ function Index() {
     if (bgImage && imageSonification) buildSonVoices();
     else teardownSonVoices();
     return () => { if (!bgImage || !imageSonification) teardownSonVoices(); };
-  }, [bgImage, imageSonification, buildSonVoices, teardownSonVoices, sonSettings.bands, sonSettings.oscType, sonSettings.baseOctave, sonSettings.delayTime, sonSettings.delayFeedback, sonSettings.scale, sonSettings.octaveRange, sonSettings.stereoWidth, sonSettings.detune, sonSettings.drive]);
+  }, [bgImage, imageSonification, buildSonVoices, teardownSonVoices, sonSettings.bands, sonSettings.oscType, sonSettings.baseOctave, sonSettings.delayTime, sonSettings.delayFeedback]);
 
   // Плавное обновление голосов по позиции сканера (0..1)
   const updateSonification = useCallback(
@@ -569,27 +507,24 @@ function Index() {
       const now = ctx.currentTime;
 
       // Окно сканирования: «Шаг сканирования» задаёт ширину читаемой полосы пикселей
-      const vertical = s.scanAxis === "v";
-      const scanLen = vertical ? an.rows : an.cols;   // вдоль движения сканера
-      const bandLen = vertical ? an.cols : an.rows;   // делится на полосы
-      const sf = Math.min(scanLen - 1, Math.max(0, progress * (scanLen - 1)));
+      const xf = Math.min(an.cols - 1, Math.max(0, progress * (an.cols - 1)));
       const half = Math.max(0, Math.round((s.scanStep - 1) / 2));
-      const sFrom = Math.max(0, Math.round(sf) - half);
-      const sTo = Math.min(scanLen - 1, Math.round(sf) + half);
-      const perBand = bandLen / bands;
+      const xFrom = Math.max(0, Math.round(xf) - half);
+      const xTo = Math.min(an.cols - 1, Math.round(xf) + half);
+      const rowsPerBand = an.rows / bands;
       const minL = s.minBrightness / 255;
-      // реакция: ползунок + ширина окна
-      const resp = Math.min(1, Math.max(0, s.response));
-      const smooth = Math.min(0.95, Math.max(0.05, (0.45 + s.scanStep * 0.02) * (1.25 - resp)));
-      const glide = Math.max(0.008, (0.02 + s.scanStep * 0.006) * (1.3 - resp));
+      // реакция сглаживания: мелкий шаг = быстрее и детальнее
+      const smooth = Math.min(0.9, 0.45 + s.scanStep * 0.02);
+      const glide = Math.max(0.02, 0.02 + s.scanStep * 0.006);
 
       for (let b = 0; b < bands; b++) {
-        const kStart = Math.floor(b * perBand);
-        const kEnd = Math.max(kStart + 1, Math.floor((b + 1) * perBand));
+        const yStart = Math.floor(b * rowsPerBand);
+        const yEnd = Math.max(yStart + 1, Math.floor((b + 1) * rowsPerBand));
         let lum = 0, lum2 = 0, rs = 0, gs = 0, bs = 0, dt = 0, st = 0, cnt = 0;
-        for (let k = kStart; k < kEnd; k++) {
-          for (let p = sFrom; p <= sTo; p++) {
-            const i = vertical ? p * an.cols + k : k * an.cols + p;
+        for (let y = yStart; y < yEnd; y++) {
+          const row = y * an.cols;
+          for (let x = xFrom; x <= xTo; x++) {
+            const i = row + x;
             const l = an.lum[i] ?? 0;
             lum += l; lum2 += l * l;
             rs += an.r[i] ?? 0; gs += an.g[i] ?? 0; bs += an.b[i] ?? 0;
@@ -601,8 +536,7 @@ function Index() {
         lum /= cnt; lum2 /= cnt; rs /= cnt; gs /= cnt; bs /= cnt; dt /= cnt; st /= cnt;
         const variance = Math.max(0, lum2 - lum * lum);
 
-        const lv = s.invert ? 1 - lum : lum;
-        const above = lv <= minL ? 0 : (lv - minL) / Math.max(0.001, 1 - minL);
+        const above = lum <= minL ? 0 : (lum - minL) / Math.max(0.001, 1 - minL);
         // контраст из настроек управляет кривой громкости
         const target = Math.pow(above, Math.max(0.4, s.contrast)) * s.volume * (2.2 / Math.sqrt(bands));
 
@@ -616,20 +550,6 @@ function Index() {
         v.filter.frequency.setTargetAtTime(cutoff, now, 0.08);
         v.filter.Q.setTargetAtTime(Math.min(18, Math.max(0.1, s.filterQ * (0.6 + st))), now, 0.12);
 
-        // цвет → микротональный сдвиг высоты
-        if (v.oscNode) {
-          const cents = ((gs - (rs + bs) / 2) / 255) * 100 * s.colorPitch;
-          const dtn = (b % 2 === 0 ? 1 : -1) * s.detune + cents;
-          v.oscNode.detune.setTargetAtTime(dtn, now, 0.12);
-        }
-
-        // панорама слегка «дышит» от насыщенности цвета
-        v.pan.pan.setTargetAtTime(
-          Math.max(-1, Math.min(1, v.basePan + (st - 0.5) * 0.3 * s.stereoWidth)),
-          now,
-          0.15,
-        );
-
         // текстура: края и разброс яркости → полосовой шум
         const texture = Math.min(1, dt * 1.5 + Math.sqrt(variance) * 2.5);
         const nTarget = texture * above * s.detail * s.volume * (1.6 / Math.sqrt(bands));
@@ -641,7 +561,6 @@ function Index() {
           0.1,
         );
       }
-
     },
     [],
   );
@@ -1260,56 +1179,6 @@ function Index() {
                     <label className="text-xs text-muted-foreground">Обратная связь: {Math.round(sonSettings.delayFeedback * 100)}%</label>
                     <input type="range" min={0} max={90} step={5} value={sonSettings.delayFeedback * 100} onChange={(e) => updateSonSettings({ delayFeedback: Number(e.target.value) / 100 })} />
                   </div>
-                  <div className="flex flex-col gap-1">
-                    <label className="text-xs text-muted-foreground">Лад</label>
-                    <select value={sonSettings.scale} onChange={(e) => updateSonSettings({ scale: e.target.value as ScaleId })} className="rounded border border-border bg-background px-2 py-1 text-sm">
-                      {(Object.keys(SCALES) as ScaleId[]).map((k) => (
-                        <option key={k} value={k}>{SCALE_LABELS[k]}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    <label className="text-xs text-muted-foreground">Диапазон: {sonSettings.octaveRange} окт.</label>
-                    <input type="range" min={1} max={4} step={1} value={sonSettings.octaveRange} onChange={(e) => updateSonSettings({ octaveRange: Number(e.target.value) })} />
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    <label className="text-xs text-muted-foreground">Направление сканирования</label>
-                    <select value={sonSettings.scanAxis} onChange={(e) => updateSonSettings({ scanAxis: e.target.value as "h" | "v" })} className="rounded border border-border bg-background px-2 py-1 text-sm">
-                      <option value="h">Слева направо</option>
-                      <option value="v">Сверху вниз</option>
-                    </select>
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    <label className="text-xs text-muted-foreground">Инверсия яркости</label>
-                    <button
-                      type="button"
-                      onClick={() => updateSonSettings({ invert: !sonSettings.invert })}
-                      className={`rounded border px-2 py-1 text-sm ${sonSettings.invert ? "border-primary bg-primary/15 text-primary" : "border-border bg-background"}`}
-                    >
-                      {sonSettings.invert ? "Тёмное = громче" : "Светлое = громче"}
-                    </button>
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    <label className="text-xs text-muted-foreground">Стерео: {Math.round(sonSettings.stereoWidth * 100)}%</label>
-                    <input type="range" min={0} max={100} step={5} value={sonSettings.stereoWidth * 100} onChange={(e) => updateSonSettings({ stereoWidth: Number(e.target.value) / 100 })} />
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    <label className="text-xs text-muted-foreground">Скорость реакции: {Math.round(sonSettings.response * 100)}%</label>
-                    <input type="range" min={0} max={100} step={5} value={sonSettings.response * 100} onChange={(e) => updateSonSettings({ response: Number(e.target.value) / 100 })} />
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    <label className="text-xs text-muted-foreground">Расстройка: {sonSettings.detune} ц.</label>
-                    <input type="range" min={0} max={50} step={1} value={sonSettings.detune} onChange={(e) => updateSonSettings({ detune: Number(e.target.value) })} />
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    <label className="text-xs text-muted-foreground">Насыщение: {Math.round(sonSettings.drive * 100)}%</label>
-                    <input type="range" min={0} max={100} step={5} value={sonSettings.drive * 100} onChange={(e) => updateSonSettings({ drive: Number(e.target.value) / 100 })} />
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    <label className="text-xs text-muted-foreground">Цвет → высота: {Math.round(sonSettings.colorPitch * 100)}%</label>
-                    <input type="range" min={0} max={100} step={5} value={sonSettings.colorPitch * 100} onChange={(e) => updateSonSettings({ colorPitch: Number(e.target.value) / 100 })} />
-                  </div>
-
                 </div>
               </div>
             )}
