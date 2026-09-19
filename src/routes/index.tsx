@@ -18,6 +18,9 @@ export const Route = createFileRoute("/")({
 type Pt = { x: number; y: number };
 type NotePt = { pi: number; x: number; y: number; angle: number; len: number };
 type OscType = "sine" | "triangle" | "sawtooth" | "square" | "pulse" | "noise";
+type ImageFeature = "brightness" | "hue" | "saturation" | "edges" | "texture";
+type SoundParameter = "pitch" | "volume" | "timbre" | "duration";
+type SonificationMappings = Record<ImageFeature, Record<SoundParameter, number>>;
 
 type SoundPreset = {
   id: string;
@@ -47,6 +50,7 @@ type SonificationSettings = {
   minBrightness: number;
   detail: number; // 0..1 — количество текстуры/шума от мелких деталей
   contrast: number; // 0.5..3 — контраст яркости → громкость
+  mappings: SonificationMappings;
 };
 
 type Stroke = {
@@ -60,6 +64,29 @@ const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", 
 const NOTE_SPACING = 38;
 const HANDLE_R = 9;
 const PIXEL_SIZE = 5;
+
+const DEFAULT_MAPPINGS: SonificationMappings = {
+  brightness: { pitch: 0, volume: 1, timbre: 0.25, duration: 0 },
+  hue: { pitch: 0, volume: 0, timbre: 1, duration: 0 },
+  saturation: { pitch: 0, volume: 0, timbre: 0.5, duration: 0 },
+  edges: { pitch: 0, volume: 0, timbre: 0.5, duration: 0 },
+  texture: { pitch: 0, volume: 0, timbre: 0.7, duration: 0 },
+};
+
+const IMAGE_FEATURES: { key: ImageFeature; label: string }[] = [
+  { key: "brightness", label: "Яркость" },
+  { key: "hue", label: "Оттенок" },
+  { key: "saturation", label: "Насыщенность" },
+  { key: "edges", label: "Края" },
+  { key: "texture", label: "Текстура" },
+];
+
+const SOUND_PARAMETERS: { key: SoundParameter; label: string }[] = [
+  { key: "pitch", label: "Высота" },
+  { key: "volume", label: "Громкость" },
+  { key: "timbre", label: "Тембр" },
+  { key: "duration", label: "Длительность" },
+];
 
 const DEFAULT_PRESETS: SoundPreset[] = [
   { id: "sega-lead", name: "SEGA Lead", hue: 0, oscType: "sawtooth", pulseWidth: 0.5, filterFreq: 2000, filterQ: 5, distortion: 10, bitcrusher: 0, delayTime: 0.1, delayFeedback: 0.2, volume: 0.3 },
@@ -83,6 +110,7 @@ const DEFAULT_SONIFICATION: SonificationSettings = {
   minBrightness: 20,
   detail: 0.35,
   contrast: 1.4,
+  mappings: DEFAULT_MAPPINGS,
 };
 
 function makeDistortionCurve(amount: number) {
@@ -319,7 +347,7 @@ function Index() {
   const analysisRef = useRef<{
     cols: number; rows: number;
     lum: Float32Array; r: Float32Array; g: Float32Array; b: Float32Array;
-    det: Float32Array; sat: Float32Array;
+    hue: Float32Array; sat: Float32Array; edge: Float32Array; texture: Float32Array;
   } | null>(null);
 
   useEffect(() => {
@@ -337,7 +365,8 @@ function Index() {
     const d = octx.getImageData(0, 0, COLS, ROWS).data;
     const n = COLS * ROWS;
     const lum = new Float32Array(n), rr = new Float32Array(n), gg = new Float32Array(n), bb = new Float32Array(n);
-    const det = new Float32Array(n), sat = new Float32Array(n);
+    const hue = new Float32Array(n), sat = new Float32Array(n);
+    const edge = new Float32Array(n), texture = new Float32Array(n);
     for (let i = 0; i < n; i++) {
       const o = i * 4;
       const a = (d[o + 3] ?? 255) / 255;
@@ -346,23 +375,45 @@ function Index() {
       lum[i] = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
       const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
       sat[i] = mx <= 0 ? 0 : (mx - mn) / mx;
+      const delta = mx - mn;
+      let h = 0;
+      if (delta > 0) {
+        if (mx === r) h = ((g - b) / delta) % 6;
+        else if (mx === g) h = (b - r) / delta + 2;
+        else h = (r - g) / delta + 4;
+      }
+      hue[i] = ((h / 6) + 1) % 1;
     }
-    // Детализация: модуль градиента (края и текстура)
+    // Края — направленный градиент; текстура — отклонение от локального среднего.
     for (let y = 0; y < ROWS; y++) {
       for (let x = 0; x < COLS; x++) {
         const i = y * COLS + x;
         const l = lum[i] ?? 0;
-        const lx = lum[y * COLS + Math.min(COLS - 1, x + 1)] ?? l;
-        const ly = lum[Math.min(ROWS - 1, y + 1) * COLS + x] ?? l;
-        det[i] = Math.min(1, (Math.abs(lx - l) + Math.abs(ly - l)) * 3);
+        const left = lum[y * COLS + Math.max(0, x - 1)] ?? l;
+        const right = lum[y * COLS + Math.min(COLS - 1, x + 1)] ?? l;
+        const top = lum[Math.max(0, y - 1) * COLS + x] ?? l;
+        const bottom = lum[Math.min(ROWS - 1, y + 1) * COLS + x] ?? l;
+        edge[i] = Math.min(1, Math.hypot(right - left, bottom - top) * 2.5);
+
+        let local = 0;
+        let localCount = 0;
+        for (let oy = -1; oy <= 1; oy++) {
+          for (let ox = -1; ox <= 1; ox++) {
+            const sy = Math.min(ROWS - 1, Math.max(0, y + oy));
+            const sx = Math.min(COLS - 1, Math.max(0, x + ox));
+            local += lum[sy * COLS + sx] ?? l;
+            localCount++;
+          }
+        }
+        texture[i] = Math.min(1, Math.abs(l - local / localCount) * 6);
       }
     }
-    analysisRef.current = { cols: COLS, rows: ROWS, lum, r: rr, g: gg, b: bb, det, sat };
+    analysisRef.current = { cols: COLS, rows: ROWS, lum, r: rr, g: gg, b: bb, hue, sat, edge, texture };
   }, [bgImage]);
 
   type SonVoice = {
     osc: AudioNode; gain: GainNode; filter: BiquadFilterNode; pan: StereoPannerNode; level: number;
-    noiseGain: GainNode; noiseFilter: BiquadFilterNode; baseFreq: number; noiseLevel: number;
+    pitchOsc: OscillatorNode | null; noiseGain: GainNode; noiseFilter: BiquadFilterNode; baseFreq: number; noiseLevel: number;
   };
   const sonVoicesRef = useRef<SonVoice[] | null>(null);
   const sonBusRef = useRef<GainNode | null>(null);
@@ -431,6 +482,7 @@ function Index() {
 
       const type: OscType = s.oscType === "auto" ? (b % 2 === 0 ? "triangle" : "sine") : s.oscType;
       let src: AudioNode;
+      let pitchOsc: OscillatorNode | null = null;
       if (type === "noise") {
         const noise = ctx.createBufferSource();
         noise.buffer = noiseBufferRef.current!;
@@ -444,6 +496,7 @@ function Index() {
         osc.detune.value = (b % 2 === 0 ? 4 : -4);
         osc.start(now);
         src = osc;
+        pitchOsc = osc;
       } else {
         const osc = ctx.createOscillator();
         osc.type = type as OscillatorType;
@@ -451,6 +504,7 @@ function Index() {
         osc.detune.value = (b % 2 === 0 ? 4 : -4);
         osc.start(now);
         src = osc;
+        pitchOsc = osc;
       }
 
       const filter = ctx.createBiquadFilter();
@@ -484,7 +538,7 @@ function Index() {
       gain.connect(pan);
       pan.connect(bus);
 
-      voices.push({ osc: src, gain, filter, pan, level: 0, noiseGain, noiseFilter, baseFreq: freq, noiseLevel: 0 });
+      voices.push({ osc: src, pitchOsc, gain, filter, pan, level: 0, noiseGain, noiseFilter, baseFreq: freq, noiseLevel: 0 });
     }
     sonVoicesRef.current = voices;
   }, [ensureAudio, teardownSonVoices]);
@@ -520,43 +574,70 @@ function Index() {
       for (let b = 0; b < bands; b++) {
         const yStart = Math.floor(b * rowsPerBand);
         const yEnd = Math.max(yStart + 1, Math.floor((b + 1) * rowsPerBand));
-        let lum = 0, lum2 = 0, rs = 0, gs = 0, bs = 0, dt = 0, st = 0, cnt = 0;
+        let lum = 0, hs = 0, st = 0, ed = 0, tx = 0, cnt = 0;
         for (let y = yStart; y < yEnd; y++) {
           const row = y * an.cols;
           for (let x = xFrom; x <= xTo; x++) {
             const i = row + x;
             const l = an.lum[i] ?? 0;
-            lum += l; lum2 += l * l;
-            rs += an.r[i] ?? 0; gs += an.g[i] ?? 0; bs += an.b[i] ?? 0;
-            dt += an.det[i] ?? 0; st += an.sat[i] ?? 0;
+            lum += l;
+            hs += an.hue[i] ?? 0; st += an.sat[i] ?? 0;
+            ed += an.edge[i] ?? 0; tx += an.texture[i] ?? 0;
             cnt++;
           }
         }
         if (cnt === 0) continue;
-        lum /= cnt; lum2 /= cnt; rs /= cnt; gs /= cnt; bs /= cnt; dt /= cnt; st /= cnt;
-        const variance = Math.max(0, lum2 - lum * lum);
+        lum /= cnt; hs /= cnt; st /= cnt; ed /= cnt; tx /= cnt;
 
         const above = lum <= minL ? 0 : (lum - minL) / Math.max(0.001, 1 - minL);
-        // контраст из настроек управляет кривой громкости
-        const target = Math.pow(above, Math.max(0.4, s.contrast)) * s.volume * (2.2 / Math.sqrt(bands));
+        const features: Record<ImageFeature, number> = {
+          brightness: Math.pow(above, Math.max(0.4, s.contrast)),
+          hue: hs,
+          saturation: st,
+          edges: ed,
+          texture: tx,
+        };
+        const mappedValue = (parameter: SoundParameter, neutral = 0.5) => {
+          let weighted = 0;
+          let amount = 0;
+          for (const { key } of IMAGE_FEATURES) {
+            const weight = s.mappings[key][parameter];
+            if (weight === 0) continue;
+            weighted += Math.abs(weight) * (weight > 0 ? features[key] : 1 - features[key]);
+            amount += Math.abs(weight);
+          }
+          if (amount <= 1) return neutral * (1 - amount) + weighted;
+          return weighted / amount;
+        };
+
+        const volumeShape = mappedValue("volume", 1);
+        const target = volumeShape * s.volume * (2.2 / Math.sqrt(bands));
+        const durationShape = mappedValue("duration", 0.5);
+        const responseTime = Math.min(0.8, Math.max(0.012, glide * Math.pow(2, (durationShape - 0.5) * 6)));
 
         const v = voices[b]!;
         v.level = v.level * smooth + target * (1 - smooth);
-        v.gain.gain.setTargetAtTime(Math.max(0.00005, v.level), now, glide);
+        v.gain.gain.setTargetAtTime(Math.max(0.00005, v.level), now, responseTime);
 
-        // тембр: тёплые цвета — темнее фильтр, холодные — ярче; насыщенность добавляет блеск
-        const warmth = (bs - rs) / 255; // -1..1
-        const cutoff = Math.min(14000, Math.max(200, s.filterFreq * Math.pow(2, warmth * 1.2 + above * 0.8 + st * 0.6)));
+        const pitchShape = mappedValue("pitch", 0.5);
+        const pitchSemitones = (pitchShape - 0.5) * 24;
+        if (v.pitchOsc) {
+          v.pitchOsc.frequency.setTargetAtTime(v.baseFreq * Math.pow(2, pitchSemitones / 12), now, responseTime);
+        }
+
+        const timbreShape = mappedValue("timbre", 0.5);
+        const timbreAmount = (timbreShape - 0.5) * 2;
+        const cutoff = Math.min(14000, Math.max(200, s.filterFreq * Math.pow(2, timbreAmount * 3)));
         v.filter.frequency.setTargetAtTime(cutoff, now, 0.08);
-        v.filter.Q.setTargetAtTime(Math.min(18, Math.max(0.1, s.filterQ * (0.6 + st))), now, 0.12);
+        v.filter.Q.setTargetAtTime(Math.min(18, Math.max(0.1, s.filterQ * (1 + timbreAmount * 0.55))), now, 0.12);
 
-        // текстура: края и разброс яркости → полосовой шум
-        const texture = Math.min(1, dt * 1.5 + Math.sqrt(variance) * 2.5);
-        const nTarget = texture * above * s.detail * s.volume * (1.6 / Math.sqrt(bands));
+        // Высокий тембральный сигнал открывает шумовой слой, сохраняя общий регулятор детализации.
+        const textureLevel = Math.max(0, timbreAmount) * Math.max(ed, tx);
+        const nTarget = textureLevel * volumeShape * s.detail * s.volume * (1.6 / Math.sqrt(bands));
         v.noiseLevel = v.noiseLevel * smooth + nTarget * (1 - smooth);
-        v.noiseGain.gain.setTargetAtTime(Math.max(0.00005, v.noiseLevel), now, glide);
+        v.noiseGain.gain.setTargetAtTime(Math.max(0.00005, v.noiseLevel), now, responseTime);
         v.noiseFilter.frequency.setTargetAtTime(
-          Math.min(15000, v.baseFreq * (2 + texture * 6)),
+          Math.min(15000, v.baseFreq * (2 + textureLevel * 6)),
           now,
           0.1,
         );
@@ -871,6 +952,25 @@ function Index() {
     setSonSettings({ ...sonSettings, ...updates });
   };
 
+  const updateMapping = (feature: ImageFeature, parameter: SoundParameter, value: number) => {
+    setSonSettings(current => ({
+      ...current,
+      mappings: {
+        ...current.mappings,
+        [feature]: { ...current.mappings[feature], [parameter]: value },
+      },
+    }));
+  };
+
+  const resetMappings = () => {
+    setSonSettings(current => ({
+      ...current,
+      mappings: Object.fromEntries(
+        IMAGE_FEATURES.map(({ key }) => [key, { ...DEFAULT_MAPPINGS[key] }]),
+      ) as SonificationMappings,
+    }));
+  };
+
   const handleImageLoad = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -1178,6 +1278,46 @@ function Index() {
                   <div className="flex flex-col gap-1">
                     <label className="text-xs text-muted-foreground">Обратная связь: {Math.round(sonSettings.delayFeedback * 100)}%</label>
                     <input type="range" min={0} max={90} step={5} value={sonSettings.delayFeedback * 100} onChange={(e) => updateSonSettings({ delayFeedback: Number(e.target.value) / 100 })} />
+                  </div>
+                </div>
+
+                <div className="mt-5 border-t border-border pt-4">
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h4 className="text-sm font-semibold">Привязка изображения к звуку</h4>
+                      <p className="text-xs text-muted-foreground">− инвертирует влияние · 0 отключает связь · + усиливает</p>
+                    </div>
+                    <button type="button" onClick={resetMappings} className={btn}>Сбросить связи</button>
+                  </div>
+                  <div className="overflow-x-auto pb-2">
+                    <div className="grid min-w-[760px] grid-cols-[120px_repeat(4,minmax(140px,1fr))] gap-x-4 gap-y-3">
+                      <div />
+                      {SOUND_PARAMETERS.map(parameter => (
+                        <div key={parameter.key} className="text-center text-xs font-semibold text-card-foreground">{parameter.label}</div>
+                      ))}
+                      {IMAGE_FEATURES.map(feature => (
+                        <div key={feature.key} className="contents">
+                          <div className="flex items-center text-xs font-medium text-card-foreground">{feature.label}</div>
+                          {SOUND_PARAMETERS.map(parameter => {
+                            const value = sonSettings.mappings[feature.key][parameter.key];
+                            return (
+                              <label key={parameter.key} className="flex min-w-0 flex-col gap-1">
+                                <span className="text-center font-mono text-[11px] text-muted-foreground">{value > 0 ? "+" : ""}{Math.round(value * 100)}%</span>
+                                <input
+                                  type="range"
+                                  min={-100}
+                                  max={100}
+                                  step={5}
+                                  value={value * 100}
+                                  aria-label={`${feature.label} — ${parameter.label}`}
+                                  onChange={(e) => updateMapping(feature.key, parameter.key, Number(e.target.value) / 100)}
+                                />
+                              </label>
+                            );
+                          })}
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 </div>
               </div>
