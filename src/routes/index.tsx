@@ -66,11 +66,11 @@ const HANDLE_R = 9;
 const PIXEL_SIZE = 5;
 
 const DEFAULT_MAPPINGS: SonificationMappings = {
-  brightness: { pitch: 0, volume: 1, timbre: 0.25, duration: 0 },
-  hue: { pitch: 0, volume: 0, timbre: 1, duration: 0 },
-  saturation: { pitch: 0, volume: 0, timbre: 0.5, duration: 0 },
-  edges: { pitch: 0, volume: 0, timbre: 0.5, duration: 0 },
-  texture: { pitch: 0, volume: 0, timbre: 0.7, duration: 0 },
+  brightness: { pitch: 0, volume: 1, timbre: 0.5, duration: 0 },
+  hue: { pitch: 0, volume: 0, timbre: 0.2, duration: 0 },
+  saturation: { pitch: 0, volume: 0, timbre: 0.3, duration: 0 },
+  edges: { pitch: 0, volume: 0, timbre: 0.15, duration: 0 },
+  texture: { pitch: 0, volume: 0, timbre: 0.15, duration: 0 },
 };
 
 const IMAGE_FEATURES: { key: ImageFeature; label: string }[] = [
