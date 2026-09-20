@@ -414,6 +414,7 @@ function Index() {
   type SonVoice = {
     osc: AudioNode; gain: GainNode; filter: BiquadFilterNode; pan: StereoPannerNode; level: number;
     pitchOsc: OscillatorNode | null; noiseGain: GainNode; noiseFilter: BiquadFilterNode; baseFreq: number; noiseLevel: number;
+    cutoff: number; semi: number;
   };
   const sonVoicesRef = useRef<SonVoice[] | null>(null);
   const sonBusRef = useRef<GainNode | null>(null);
