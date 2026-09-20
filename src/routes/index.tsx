@@ -1006,7 +1006,7 @@ function Index() {
     const hue = Math.floor(Math.random() * 360);
     const newPreset: SoundPreset = {
       id: newId, name: `Цвет ${presets.length + 1}`, hue,
-      oscType: "sine", pulseWidth: 0.5, filterFreq: 800, filterQ: 3,
+      oscType: "sine", pulseWidth: 0.5, filterFreq: 2000, filterQ: 1,
       distortion: 0, bitcrusher: 0, delayTime: 0, delayFeedback: 0, volume: 0.28,
     };
     setPresets([...presets, newPreset]);
