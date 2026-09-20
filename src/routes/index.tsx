@@ -18,9 +18,6 @@ export const Route = createFileRoute("/")({
 type Pt = { x: number; y: number };
 type NotePt = { pi: number; x: number; y: number; angle: number; len: number };
 type OscType = "sine" | "triangle" | "sawtooth" | "square" | "pulse" | "noise";
-type ImageFeature = "brightness" | "hue" | "saturation" | "edges" | "texture";
-type SoundParameter = "pitch" | "volume" | "timbre" | "duration";
-type SonificationMappings = Record<ImageFeature, Record<SoundParameter, number>>;
 
 type SoundPreset = {
   id: string;
@@ -50,7 +47,6 @@ type SonificationSettings = {
   minBrightness: number;
   detail: number; // 0..1 — количество текстуры/шума от мелких деталей
   contrast: number; // 0.5..3 — контраст яркости → громкость
-  mappings: SonificationMappings;
 };
 
 type Stroke = {
@@ -65,36 +61,13 @@ const NOTE_SPACING = 38;
 const HANDLE_R = 9;
 const PIXEL_SIZE = 5;
 
-const DEFAULT_MAPPINGS: SonificationMappings = {
-  brightness: { pitch: 0, volume: 1, timbre: 0.5, duration: 0 },
-  hue: { pitch: 0, volume: 0, timbre: 0.2, duration: 0 },
-  saturation: { pitch: 0, volume: 0, timbre: 0.3, duration: 0 },
-  edges: { pitch: 0, volume: 0, timbre: 0.15, duration: 0 },
-  texture: { pitch: 0, volume: 0, timbre: 0.15, duration: 0 },
-};
-
-const IMAGE_FEATURES: { key: ImageFeature; label: string }[] = [
-  { key: "brightness", label: "Яркость" },
-  { key: "hue", label: "Оттенок" },
-  { key: "saturation", label: "Насыщенность" },
-  { key: "edges", label: "Края" },
-  { key: "texture", label: "Текстура" },
-];
-
-const SOUND_PARAMETERS: { key: SoundParameter; label: string }[] = [
-  { key: "pitch", label: "Высота" },
-  { key: "volume", label: "Громкость" },
-  { key: "timbre", label: "Тембр" },
-  { key: "duration", label: "Длительность" },
-];
-
 const DEFAULT_PRESETS: SoundPreset[] = [
-  { id: "sega-lead", name: "SEGA Lead", hue: 0, oscType: "sawtooth", pulseWidth: 0.5, filterFreq: 2600, filterQ: 1.2, distortion: 6, bitcrusher: 0, delayTime: 0.12, delayFeedback: 0.18, volume: 0.22 },
-  { id: "nes-square", name: "NES Square", hue: 210, oscType: "square", pulseWidth: 0.5, filterFreq: 2200, filterQ: 0.8, distortion: 0, bitcrusher: 0, delayTime: 0, delayFeedback: 0, volume: 0.2 },
-  { id: "gameboy-arp", name: "Game Boy Arp", hue: 120, oscType: "triangle", pulseWidth: 0.5, filterFreq: 3000, filterQ: 0.7, distortion: 0, bitcrusher: 0, delayTime: 0.16, delayFeedback: 0.25, volume: 0.26 },
-  { id: "chiptune-bass", name: "Chiptune Bass", hue: 280, oscType: "square", pulseWidth: 0.3, filterFreq: 700, filterQ: 2, distortion: 4, bitcrusher: 0, delayTime: 0.05, delayFeedback: 0.1, volume: 0.24 },
-  { id: "8bit-noise", name: "8-bit Noise", hue: 50, oscType: "noise", pulseWidth: 0.5, filterFreq: 2400, filterQ: 0.7, distortion: 0, bitcrusher: 6, delayTime: 0, delayFeedback: 0, volume: 0.14 },
-  { id: "pulse-wave", name: "Pulse Wave", hue: 170, oscType: "pulse", pulseWidth: 0.35, filterFreq: 1800, filterQ: 1, distortion: 3, bitcrusher: 0, delayTime: 0.2, delayFeedback: 0.22, volume: 0.2 },
+  { id: "sega-lead", name: "SEGA Lead", hue: 0, oscType: "sawtooth", pulseWidth: 0.5, filterFreq: 2000, filterQ: 5, distortion: 10, bitcrusher: 0, delayTime: 0.1, delayFeedback: 0.2, volume: 0.3 },
+  { id: "nes-square", name: "NES Square", hue: 210, oscType: "square", pulseWidth: 0.5, filterFreq: 1500, filterQ: 2, distortion: 0, bitcrusher: 0, delayTime: 0, delayFeedback: 0, volume: 0.25 },
+  { id: "gameboy-arp", name: "Game Boy Arp", hue: 120, oscType: "triangle", pulseWidth: 0.5, filterFreq: 1000, filterQ: 3, distortion: 0, bitcrusher: 0, delayTime: 0.15, delayFeedback: 0.3, volume: 0.28 },
+  { id: "chiptune-bass", name: "Chiptune Bass", hue: 280, oscType: "square", pulseWidth: 0.25, filterFreq: 400, filterQ: 8, distortion: 15, bitcrusher: 0, delayTime: 0.05, delayFeedback: 0.1, volume: 0.35 },
+  { id: "8bit-noise", name: "8-bit Noise", hue: 50, oscType: "noise", pulseWidth: 0.5, filterFreq: 3000, filterQ: 1, distortion: 0, bitcrusher: 4, delayTime: 0, delayFeedback: 0, volume: 0.2 },
+  { id: "pulse-wave", name: "Pulse Wave", hue: 170, oscType: "pulse", pulseWidth: 0.3, filterFreq: 1200, filterQ: 4, distortion: 8, bitcrusher: 0, delayTime: 0.2, delayFeedback: 0.25, volume: 0.27 },
 ];
 
 const DEFAULT_SONIFICATION: SonificationSettings = {
@@ -110,31 +83,16 @@ const DEFAULT_SONIFICATION: SonificationSettings = {
   minBrightness: 20,
   detail: 0.35,
   contrast: 1.4,
-  mappings: DEFAULT_MAPPINGS,
 };
 
-// Мягкое насыщение (tanh) с нормализацией — вместо резкого клиппинга
 function makeDistortionCurve(amount: number) {
-  const drive = 1 + Math.max(0, Math.min(100, amount)) * 0.25;
-  const n = 2048;
-  const curve = new Float32Array(n);
-  const norm = Math.tanh(drive);
-  for (let i = 0; i < n; i++) {
-    const x = (i * 2) / (n - 1) - 1;
-    curve[i] = Math.tanh(x * drive) / norm;
-  }
-  return curve;
-}
-
-// Биткрашер: ступенчатая кривая квантования (0 = выкл, 1..8 бит)
-function makeBitcrushCurve(bits: number) {
-  const b = Math.max(1, Math.min(8, Math.round(bits)));
-  const levels = Math.pow(2, b);
-  const n = 2048;
-  const curve = new Float32Array(n);
-  for (let i = 0; i < n; i++) {
-    const x = (i * 2) / (n - 1) - 1;
-    curve[i] = Math.round(x * levels) / levels;
+  const k = typeof amount === "number" ? amount : 50;
+  const n_samples = 44100;
+  const curve = new Float32Array(n_samples);
+  const deg = Math.PI / 180;
+  for (let i = 0; i < n_samples; ++i) {
+    const x = (i * 2) / n_samples - 1;
+    curve[i] = ((3 + k) * x * 20 * deg) / (Math.PI + k * Math.abs(x));
   }
   return curve;
 }
@@ -253,18 +211,10 @@ function Index() {
       const AC = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       const ctx = new AC();
       const master = ctx.createGain();
-      master.gain.value = 0.5;
-      // Лимитер на выходе — защита от перегруза и «пердящего» клиппинга
-      const limiter = ctx.createDynamicsCompressor();
-      limiter.threshold.value = -6;
-      limiter.knee.value = 6;
-      limiter.ratio.value = 12;
-      limiter.attack.value = 0.003;
-      limiter.release.value = 0.2;
+      master.gain.value = 0.28;
       const recDest = ctx.createMediaStreamDestination();
-      master.connect(limiter);
-      limiter.connect(ctx.destination);
-      limiter.connect(recDest);
+      master.connect(ctx.destination);
+      master.connect(recDest);
       audioRef.current = ctx;
       masterRef.current = master;
       recDestRef.current = recDest;
@@ -289,7 +239,6 @@ function Index() {
       const dur = Math.min(2.2, 0.18 + (n.len / Math.max(w, 1)) * 3.2);
       const now = ctx.currentTime;
 
-      const tail = dur + 0.12;
       let sourceNode: AudioNode;
       if (preset.oscType === "noise") {
         const noise = ctx.createBufferSource();
@@ -297,103 +246,68 @@ function Index() {
         noise.loop = true;
         sourceNode = noise;
         noise.start(now);
-        noise.stop(now + tail);
+        noise.stop(now + dur + 0.05);
       } else if (preset.oscType === "pulse") {
         const osc = ctx.createOscillator();
         osc.setPeriodicWave(createPulseWave(ctx, preset.pulseWidth));
         osc.frequency.setValueAtTime(freq, now);
         sourceNode = osc;
         osc.start(now);
-        osc.stop(now + tail);
+        osc.stop(now + dur + 0.05);
       } else {
         const osc = ctx.createOscillator();
         osc.type = preset.oscType as OscillatorType;
         osc.frequency.setValueAtTime(freq, now);
         sourceNode = osc;
         osc.start(now);
-        osc.stop(now + tail);
+        osc.stop(now + dur + 0.05);
       }
-
-      // Предусиление перед насыщением — контролируемый «драйв», а не клиппинг
-      const drive = ctx.createGain();
-      drive.gain.value = preset.distortion > 0 ? 1 + preset.distortion * 0.06 : 1;
-
-      const shaper = ctx.createWaveShaper();
-      if (preset.distortion > 0) {
-        shaper.curve = makeDistortionCurve(preset.distortion);
-        shaper.oversample = "4x";
-      }
-      const crusher = ctx.createWaveShaper();
-      if (preset.bitcrusher > 0) {
-        crusher.curve = makeBitcrushCurve(preset.bitcrusher);
-        crusher.oversample = "2x";
-      }
-      // Компенсация громкости после насыщения
-      const postGain = ctx.createGain();
-      postGain.gain.value = preset.distortion > 0 ? 1 / (1 + preset.distortion * 0.05) : 1;
 
       const filter = ctx.createBiquadFilter();
       filter.type = "lowpass";
-      filter.frequency.setValueAtTime(Math.max(freq * 1.5, Math.min(16000, preset.filterFreq)), now);
-      filter.Q.value = Math.min(8, Math.max(0.0001, preset.filterQ));
-      // Убираем «пердёж» — срезаем нижний гул
-      const hp = ctx.createBiquadFilter();
-      hp.type = "highpass";
-      hp.frequency.value = 45;
+      filter.frequency.setValueAtTime(preset.filterFreq, now);
+      filter.Q.value = preset.filterQ;
+
+      const distortion = ctx.createWaveShaper();
+      if (preset.distortion > 0) {
+        distortion.curve = makeDistortionCurve(preset.distortion);
+        distortion.oversample = "4x";
+      }
 
       const gain = ctx.createGain();
-      const peak = Math.min(0.5, preset.volume * (0.5 + Math.min(0.5, n.len / 1600)));
-      const attack = 0.012;
-      const decayEnd = now + dur;
+      const peak = preset.volume * (0.5 + Math.min(0.5, n.len / 1600));
       gain.gain.setValueAtTime(0.0001, now);
-      gain.gain.exponentialRampToValueAtTime(Math.max(0.001, peak), now + attack);
-      gain.gain.exponentialRampToValueAtTime(Math.max(0.001, peak * 0.6), now + attack + dur * 0.35);
-      gain.gain.exponentialRampToValueAtTime(0.0001, decayEnd);
-      gain.gain.setValueAtTime(0, decayEnd + 0.001);
+      gain.gain.exponentialRampToValueAtTime(peak, now + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
 
       const pan = ctx.createStereoPanner();
       pan.pan.value = Math.max(-1, Math.min(1, (n.x / Math.max(w, 1)) * 2 - 1));
 
-      // Цепочка: источник → драйв → сатурация → биткраш → фильтры → огибающая → панорама
-      sourceNode.connect(drive);
-      let node: AudioNode = drive;
-      if (preset.distortion > 0) { node.connect(shaper); node = shaper; }
-      if (preset.bitcrusher > 0) { node.connect(crusher); node = crusher; }
-      node.connect(postGain);
-      postGain.connect(filter);
-      filter.connect(hp);
-      hp.connect(gain);
+      let delayNode: DelayNode | null = null;
+      let feedbackNode: GainNode | null = null;
+      if (preset.delayTime > 0 && preset.delayFeedback > 0) {
+        delayNode = ctx.createDelay(1.5);
+        delayNode.delayTime.value = preset.delayTime;
+        feedbackNode = ctx.createGain();
+        feedbackNode.gain.value = preset.delayFeedback;
+        delayNode.connect(feedbackNode);
+        feedbackNode.connect(delayNode);
+      }
+
+      sourceNode.connect(filter);
+      if (preset.distortion > 0) {
+        filter.connect(distortion);
+        distortion.connect(gain);
+      } else {
+        filter.connect(gain);
+      }
       gain.connect(pan);
       pan.connect(master);
 
-      let delayNode: DelayNode | null = null;
-      let wet: GainNode | null = null;
-      if (preset.delayTime > 0 && preset.delayFeedback > 0) {
-        delayNode = ctx.createDelay(1.5);
-        delayNode.delayTime.value = Math.min(1.2, preset.delayTime);
-        const fb = ctx.createGain();
-        fb.gain.value = Math.min(0.55, preset.delayFeedback);
-        // Демпфирование повторов, чтобы эхо не превращалось в кашу
-        const damp = ctx.createBiquadFilter();
-        damp.type = "lowpass";
-        damp.frequency.value = 2500;
-        wet = ctx.createGain();
-        wet.gain.value = 0.3;
+      if (delayNode && feedbackNode) {
         gain.connect(delayNode);
-        delayNode.connect(damp);
-        damp.connect(fb);
-        fb.connect(delayNode);
-        delayNode.connect(wet);
-        wet.connect(master);
+        delayNode.connect(master);
       }
-
-      // Освобождаем узлы — иначе эхо и фильтры копятся и превращаются в грязь
-      const cleanupIn = (tail + (delayNode ? 2.5 : 0.2)) * 1000;
-      window.setTimeout(() => {
-        for (const nd of [sourceNode, drive, shaper, crusher, postGain, filter, hp, gain, pan, delayNode, wet]) {
-          try { nd?.disconnect(); } catch { /* noop */ }
-        }
-      }, cleanupIn);
 
       if (!silentLabel)
         setLast(`${NOTE_NAMES[(3 + semitone) % 12]} · ${dur.toFixed(2)} с · ${preset.name}`);
@@ -405,7 +319,7 @@ function Index() {
   const analysisRef = useRef<{
     cols: number; rows: number;
     lum: Float32Array; r: Float32Array; g: Float32Array; b: Float32Array;
-    hue: Float32Array; sat: Float32Array; edge: Float32Array; texture: Float32Array;
+    det: Float32Array; sat: Float32Array;
   } | null>(null);
 
   useEffect(() => {
@@ -423,8 +337,7 @@ function Index() {
     const d = octx.getImageData(0, 0, COLS, ROWS).data;
     const n = COLS * ROWS;
     const lum = new Float32Array(n), rr = new Float32Array(n), gg = new Float32Array(n), bb = new Float32Array(n);
-    const hue = new Float32Array(n), sat = new Float32Array(n);
-    const edge = new Float32Array(n), texture = new Float32Array(n);
+    const det = new Float32Array(n), sat = new Float32Array(n);
     for (let i = 0; i < n; i++) {
       const o = i * 4;
       const a = (d[o + 3] ?? 255) / 255;
@@ -433,46 +346,23 @@ function Index() {
       lum[i] = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
       const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
       sat[i] = mx <= 0 ? 0 : (mx - mn) / mx;
-      const delta = mx - mn;
-      let h = 0;
-      if (delta > 0) {
-        if (mx === r) h = ((g - b) / delta) % 6;
-        else if (mx === g) h = (b - r) / delta + 2;
-        else h = (r - g) / delta + 4;
-      }
-      hue[i] = ((h / 6) + 1) % 1;
     }
-    // Края — направленный градиент; текстура — отклонение от локального среднего.
+    // Детализация: модуль градиента (края и текстура)
     for (let y = 0; y < ROWS; y++) {
       for (let x = 0; x < COLS; x++) {
         const i = y * COLS + x;
         const l = lum[i] ?? 0;
-        const left = lum[y * COLS + Math.max(0, x - 1)] ?? l;
-        const right = lum[y * COLS + Math.min(COLS - 1, x + 1)] ?? l;
-        const top = lum[Math.max(0, y - 1) * COLS + x] ?? l;
-        const bottom = lum[Math.min(ROWS - 1, y + 1) * COLS + x] ?? l;
-        edge[i] = Math.min(1, Math.hypot(right - left, bottom - top) * 2.5);
-
-        let local = 0;
-        let localCount = 0;
-        for (let oy = -1; oy <= 1; oy++) {
-          for (let ox = -1; ox <= 1; ox++) {
-            const sy = Math.min(ROWS - 1, Math.max(0, y + oy));
-            const sx = Math.min(COLS - 1, Math.max(0, x + ox));
-            local += lum[sy * COLS + sx] ?? l;
-            localCount++;
-          }
-        }
-        texture[i] = Math.min(1, Math.abs(l - local / localCount) * 6);
+        const lx = lum[y * COLS + Math.min(COLS - 1, x + 1)] ?? l;
+        const ly = lum[Math.min(ROWS - 1, y + 1) * COLS + x] ?? l;
+        det[i] = Math.min(1, (Math.abs(lx - l) + Math.abs(ly - l)) * 3);
       }
     }
-    analysisRef.current = { cols: COLS, rows: ROWS, lum, r: rr, g: gg, b: bb, hue, sat, edge, texture };
+    analysisRef.current = { cols: COLS, rows: ROWS, lum, r: rr, g: gg, b: bb, det, sat };
   }, [bgImage]);
 
   type SonVoice = {
     osc: AudioNode; gain: GainNode; filter: BiquadFilterNode; pan: StereoPannerNode; level: number;
-    pitchOsc: OscillatorNode | null; noiseGain: GainNode; noiseFilter: BiquadFilterNode; baseFreq: number; noiseLevel: number;
-    cutoff: number; semi: number;
+    noiseGain: GainNode; noiseFilter: BiquadFilterNode; baseFreq: number; noiseLevel: number;
   };
   const sonVoicesRef = useRef<SonVoice[] | null>(null);
   const sonBusRef = useRef<GainNode | null>(null);
@@ -541,7 +431,6 @@ function Index() {
 
       const type: OscType = s.oscType === "auto" ? (b % 2 === 0 ? "triangle" : "sine") : s.oscType;
       let src: AudioNode;
-      let pitchOsc: OscillatorNode | null = null;
       if (type === "noise") {
         const noise = ctx.createBufferSource();
         noise.buffer = noiseBufferRef.current!;
@@ -555,7 +444,6 @@ function Index() {
         osc.detune.value = (b % 2 === 0 ? 4 : -4);
         osc.start(now);
         src = osc;
-        pitchOsc = osc;
       } else {
         const osc = ctx.createOscillator();
         osc.type = type as OscillatorType;
@@ -563,7 +451,6 @@ function Index() {
         osc.detune.value = (b % 2 === 0 ? 4 : -4);
         osc.start(now);
         src = osc;
-        pitchOsc = osc;
       }
 
       const filter = ctx.createBiquadFilter();
@@ -597,7 +484,7 @@ function Index() {
       gain.connect(pan);
       pan.connect(bus);
 
-      voices.push({ osc: src, pitchOsc, gain, filter, pan, level: 0, noiseGain, noiseFilter, baseFreq: freq, noiseLevel: 0, cutoff: Math.max(freq * 2, s.filterFreq), semi: 0 });
+      voices.push({ osc: src, gain, filter, pan, level: 0, noiseGain, noiseFilter, baseFreq: freq, noiseLevel: 0 });
     }
     sonVoicesRef.current = voices;
   }, [ensureAudio, teardownSonVoices]);
@@ -627,90 +514,51 @@ function Index() {
       const rowsPerBand = an.rows / bands;
       const minL = s.minBrightness / 255;
       // реакция сглаживания: мелкий шаг = быстрее и детальнее
-      // Более плотное сглаживание — меньше дребезга и щелчков
-      const smooth = Math.min(0.96, 0.8 + s.scanStep * 0.015);
-      const glide = Math.max(0.05, 0.05 + s.scanStep * 0.01);
-      const PENTA_STEPS = [0, 3, 5, 7, 10, 12, 15, 17, 19, 22, 24];
+      const smooth = Math.min(0.9, 0.45 + s.scanStep * 0.02);
+      const glide = Math.max(0.02, 0.02 + s.scanStep * 0.006);
 
       for (let b = 0; b < bands; b++) {
         const yStart = Math.floor(b * rowsPerBand);
         const yEnd = Math.max(yStart + 1, Math.floor((b + 1) * rowsPerBand));
-        let lum = 0, hs = 0, st = 0, ed = 0, tx = 0, cnt = 0;
+        let lum = 0, lum2 = 0, rs = 0, gs = 0, bs = 0, dt = 0, st = 0, cnt = 0;
         for (let y = yStart; y < yEnd; y++) {
           const row = y * an.cols;
           for (let x = xFrom; x <= xTo; x++) {
             const i = row + x;
             const l = an.lum[i] ?? 0;
-            lum += l;
-            hs += an.hue[i] ?? 0; st += an.sat[i] ?? 0;
-            ed += an.edge[i] ?? 0; tx += an.texture[i] ?? 0;
+            lum += l; lum2 += l * l;
+            rs += an.r[i] ?? 0; gs += an.g[i] ?? 0; bs += an.b[i] ?? 0;
+            dt += an.det[i] ?? 0; st += an.sat[i] ?? 0;
             cnt++;
           }
         }
         if (cnt === 0) continue;
-        lum /= cnt; hs /= cnt; st /= cnt; ed /= cnt; tx /= cnt;
+        lum /= cnt; lum2 /= cnt; rs /= cnt; gs /= cnt; bs /= cnt; dt /= cnt; st /= cnt;
+        const variance = Math.max(0, lum2 - lum * lum);
 
         const above = lum <= minL ? 0 : (lum - minL) / Math.max(0.001, 1 - minL);
-        const features: Record<ImageFeature, number> = {
-          brightness: Math.pow(above, Math.max(0.4, s.contrast)),
-          hue: hs,
-          saturation: st,
-          edges: Math.min(1, ed),
-          texture: Math.min(1, tx),
-        };
-        const mappedValue = (parameter: SoundParameter, neutral = 0.5) => {
-          let weighted = 0;
-          let amount = 0;
-          for (const { key } of IMAGE_FEATURES) {
-            const weight = s.mappings[key][parameter];
-            if (weight === 0) continue;
-            weighted += Math.abs(weight) * (weight > 0 ? features[key] : 1 - features[key]);
-            amount += Math.abs(weight);
-          }
-          if (amount <= 1) return neutral * (1 - amount) + weighted;
-          return weighted / amount;
-        };
+        // контраст из настроек управляет кривой громкости
+        const target = Math.pow(above, Math.max(0.4, s.contrast)) * s.volume * (2.2 / Math.sqrt(bands));
 
         const v = voices[b]!;
-
-        // Громкость: мягкая кривая + шумовой порог, чтобы тихие полосы молчали
-        const volumeShape = mappedValue("volume", 1);
-        const gated = volumeShape < 0.04 ? 0 : (volumeShape - 0.04) / 0.96;
-        const target = Math.pow(gated, 1.3) * s.volume * (1.6 / Math.sqrt(bands));
-        const durationShape = mappedValue("duration", 0.5);
-        const responseTime = Math.min(1.2, Math.max(0.04, glide * Math.pow(2, (durationShape - 0.5) * 4)));
-
         v.level = v.level * smooth + target * (1 - smooth);
-        v.gain.gain.setTargetAtTime(Math.max(0.00005, v.level), now, responseTime);
+        v.gain.gain.setTargetAtTime(Math.max(0.00005, v.level), now, glide);
 
-        // Высота: квантуем в пентатонику — без «воя» между нотами
-        const pitchShape = mappedValue("pitch", 0.5);
-        if (v.pitchOsc) {
-          const span = (pitchShape - 0.5) * 2; // -1..1
-          const idx = Math.round(Math.abs(span) * 5);
-          const semiRaw = (PENTA_STEPS[Math.min(PENTA_STEPS.length - 1, idx)] ?? 0) * Math.sign(span);
-          v.semi = v.semi * 0.85 + semiRaw * 0.15;
-          const quant = Math.round(v.semi);
-          v.pitchOsc.frequency.setTargetAtTime(v.baseFreq * Math.pow(2, quant / 12), now, Math.max(0.08, responseTime));
-        }
+        // тембр: тёплые цвета — темнее фильтр, холодные — ярче; насыщенность добавляет блеск
+        const warmth = (bs - rs) / 255; // -1..1
+        const cutoff = Math.min(14000, Math.max(200, s.filterFreq * Math.pow(2, warmth * 1.2 + above * 0.8 + st * 0.6)));
+        v.filter.frequency.setTargetAtTime(cutoff, now, 0.08);
+        v.filter.Q.setTargetAtTime(Math.min(18, Math.max(0.1, s.filterQ * (0.6 + st))), now, 0.12);
 
-        // Тембр: плавный фильтр без резких скачков резонанса
-        const timbreShape = mappedValue("timbre", 0.5);
-        const timbreAmount = (timbreShape - 0.5) * 2;
-        const cutoffTarget = Math.min(9000, Math.max(Math.min(900, v.baseFreq * 2), s.filterFreq * Math.pow(2, timbreAmount * 1.6)));
-        v.cutoff = v.cutoff * 0.85 + cutoffTarget * 0.15;
-        v.filter.frequency.setTargetAtTime(v.cutoff, now, 0.15);
-        v.filter.Q.setTargetAtTime(Math.min(6, Math.max(0.3, s.filterQ * (1 + timbreAmount * 0.25))), now, 0.25);
-
-        // Текстурный шум — только как лёгкий призвук
-        const textureLevel = Math.max(0, Math.min(1, (features.edges * 0.6 + features.texture * 0.4)));
-        const nTarget = textureLevel * gated * s.detail * s.volume * (0.5 / Math.sqrt(bands));
-        v.noiseLevel = v.noiseLevel * Math.max(smooth, 0.9) + nTarget * (1 - Math.max(smooth, 0.9));
-        v.noiseGain.gain.setTargetAtTime(Math.max(0.00005, v.noiseLevel), now, Math.max(0.12, responseTime));
+        // текстура: края и разброс яркости → полосовой шум
+        const texture = Math.min(1, dt * 1.5 + Math.sqrt(variance) * 2.5);
+        const nTarget = texture * above * s.detail * s.volume * (1.6 / Math.sqrt(bands));
+        v.noiseLevel = v.noiseLevel * smooth + nTarget * (1 - smooth);
+        v.noiseGain.gain.setTargetAtTime(Math.max(0.00005, v.noiseLevel), now, glide);
         v.noiseFilter.frequency.setTargetAtTime(
-          Math.min(9000, v.baseFreq * (2 + textureLevel * 3)),
+          Math.min(15000, v.baseFreq * (2 + texture * 6)),
           now,
-          0.2,
+          0.1,
         );
       }
     },
@@ -1001,7 +849,7 @@ function Index() {
     const hue = Math.floor(Math.random() * 360);
     const newPreset: SoundPreset = {
       id: newId, name: `Цвет ${presets.length + 1}`, hue,
-      oscType: "sine", pulseWidth: 0.5, filterFreq: 2000, filterQ: 1,
+      oscType: "sine", pulseWidth: 0.5, filterFreq: 800, filterQ: 3,
       distortion: 0, bitcrusher: 0, delayTime: 0, delayFeedback: 0, volume: 0.28,
     };
     setPresets([...presets, newPreset]);
@@ -1021,25 +869,6 @@ function Index() {
 
   const updateSonSettings = (updates: Partial<SonificationSettings>) => {
     setSonSettings({ ...sonSettings, ...updates });
-  };
-
-  const updateMapping = (feature: ImageFeature, parameter: SoundParameter, value: number) => {
-    setSonSettings(current => ({
-      ...current,
-      mappings: {
-        ...current.mappings,
-        [feature]: { ...current.mappings[feature], [parameter]: value },
-      },
-    }));
-  };
-
-  const resetMappings = () => {
-    setSonSettings(current => ({
-      ...current,
-      mappings: Object.fromEntries(
-        IMAGE_FEATURES.map(({ key }) => [key, { ...DEFAULT_MAPPINGS[key] }]),
-      ) as SonificationMappings,
-    }));
   };
 
   const handleImageLoad = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1240,7 +1069,7 @@ function Index() {
                 </div>
                 <div className="flex flex-col gap-1">
                   <label className="text-xs text-muted-foreground">Резонанс: {currentPreset.filterQ}</label>
-                  <input type="range" min={0.1} max={8} step={0.1} value={currentPreset.filterQ} onChange={(e) => updatePreset(currentPreset.id, { filterQ: Number(e.target.value) })} />
+                  <input type="range" min={0.1} max={20} step={0.1} value={currentPreset.filterQ} onChange={(e) => updatePreset(currentPreset.id, { filterQ: Number(e.target.value) })} />
                 </div>
                 <div className="flex flex-col gap-1">
                   <label className="text-xs text-muted-foreground">Дисторшн: {currentPreset.distortion}</label>
@@ -1248,7 +1077,7 @@ function Index() {
                 </div>
                 <div className="flex flex-col gap-1">
                   <label className="text-xs text-muted-foreground">Bitcrusher: {currentPreset.bitcrusher} бит</label>
-                  <input type="range" min={0} max={8} step={1} value={currentPreset.bitcrusher} onChange={(e) => updatePreset(currentPreset.id, { bitcrusher: Number(e.target.value) })} />
+                  <input type="range" min={0} max={16} step={1} value={currentPreset.bitcrusher} onChange={(e) => updatePreset(currentPreset.id, { bitcrusher: Number(e.target.value) })} />
                 </div>
                 <div className="flex flex-col gap-1">
                   <label className="text-xs text-muted-foreground">Эхо: {(currentPreset.delayTime * 1000).toFixed(0)} мс</label>
@@ -1349,46 +1178,6 @@ function Index() {
                   <div className="flex flex-col gap-1">
                     <label className="text-xs text-muted-foreground">Обратная связь: {Math.round(sonSettings.delayFeedback * 100)}%</label>
                     <input type="range" min={0} max={90} step={5} value={sonSettings.delayFeedback * 100} onChange={(e) => updateSonSettings({ delayFeedback: Number(e.target.value) / 100 })} />
-                  </div>
-                </div>
-
-                <div className="mt-5 border-t border-border pt-4">
-                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                    <div>
-                      <h4 className="text-sm font-semibold">Привязка изображения к звуку</h4>
-                      <p className="text-xs text-muted-foreground">− инвертирует влияние · 0 отключает связь · + усиливает</p>
-                    </div>
-                    <button type="button" onClick={resetMappings} className={btn}>Сбросить связи</button>
-                  </div>
-                  <div className="overflow-x-auto pb-2">
-                    <div className="grid min-w-[760px] grid-cols-[120px_repeat(4,minmax(140px,1fr))] gap-x-4 gap-y-3">
-                      <div />
-                      {SOUND_PARAMETERS.map(parameter => (
-                        <div key={parameter.key} className="text-center text-xs font-semibold text-card-foreground">{parameter.label}</div>
-                      ))}
-                      {IMAGE_FEATURES.map(feature => (
-                        <div key={feature.key} className="contents">
-                          <div className="flex items-center text-xs font-medium text-card-foreground">{feature.label}</div>
-                          {SOUND_PARAMETERS.map(parameter => {
-                            const value = sonSettings.mappings[feature.key][parameter.key];
-                            return (
-                              <label key={parameter.key} className="flex min-w-0 flex-col gap-1">
-                                <span className="text-center font-mono text-[11px] text-muted-foreground">{value > 0 ? "+" : ""}{Math.round(value * 100)}%</span>
-                                <input
-                                  type="range"
-                                  min={-100}
-                                  max={100}
-                                  step={5}
-                                  value={value * 100}
-                                  aria-label={`${feature.label} — ${parameter.label}`}
-                                  onChange={(e) => updateMapping(feature.key, parameter.key, Number(e.target.value) / 100)}
-                                />
-                              </label>
-                            );
-                          })}
-                        </div>
-                      ))}
-                    </div>
                   </div>
                 </div>
               </div>
