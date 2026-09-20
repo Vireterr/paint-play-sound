@@ -66,11 +66,11 @@ const HANDLE_R = 9;
 const PIXEL_SIZE = 5;
 
 const DEFAULT_MAPPINGS: SonificationMappings = {
-  brightness: { pitch: 0, volume: 1, timbre: 0.25, duration: 0 },
-  hue: { pitch: 0, volume: 0, timbre: 1, duration: 0 },
-  saturation: { pitch: 0, volume: 0, timbre: 0.5, duration: 0 },
-  edges: { pitch: 0, volume: 0, timbre: 0.5, duration: 0 },
-  texture: { pitch: 0, volume: 0, timbre: 0.7, duration: 0 },
+  brightness: { pitch: 0, volume: 1, timbre: 0.5, duration: 0 },
+  hue: { pitch: 0, volume: 0, timbre: 0.2, duration: 0 },
+  saturation: { pitch: 0, volume: 0, timbre: 0.3, duration: 0 },
+  edges: { pitch: 0, volume: 0, timbre: 0.15, duration: 0 },
+  texture: { pitch: 0, volume: 0, timbre: 0.15, duration: 0 },
 };
 
 const IMAGE_FEATURES: { key: ImageFeature; label: string }[] = [
@@ -414,6 +414,7 @@ function Index() {
   type SonVoice = {
     osc: AudioNode; gain: GainNode; filter: BiquadFilterNode; pan: StereoPannerNode; level: number;
     pitchOsc: OscillatorNode | null; noiseGain: GainNode; noiseFilter: BiquadFilterNode; baseFreq: number; noiseLevel: number;
+    cutoff: number; semi: number;
   };
   const sonVoicesRef = useRef<SonVoice[] | null>(null);
   const sonBusRef = useRef<GainNode | null>(null);
@@ -538,7 +539,7 @@ function Index() {
       gain.connect(pan);
       pan.connect(bus);
 
-      voices.push({ osc: src, pitchOsc, gain, filter, pan, level: 0, noiseGain, noiseFilter, baseFreq: freq, noiseLevel: 0 });
+      voices.push({ osc: src, pitchOsc, gain, filter, pan, level: 0, noiseGain, noiseFilter, baseFreq: freq, noiseLevel: 0, cutoff: Math.max(freq * 2, s.filterFreq), semi: 0 });
     }
     sonVoicesRef.current = voices;
   }, [ensureAudio, teardownSonVoices]);
@@ -568,8 +569,10 @@ function Index() {
       const rowsPerBand = an.rows / bands;
       const minL = s.minBrightness / 255;
       // реакция сглаживания: мелкий шаг = быстрее и детальнее
-      const smooth = Math.min(0.9, 0.45 + s.scanStep * 0.02);
-      const glide = Math.max(0.02, 0.02 + s.scanStep * 0.006);
+      // Более плотное сглаживание — меньше дребезга и щелчков
+      const smooth = Math.min(0.96, 0.8 + s.scanStep * 0.015);
+      const glide = Math.max(0.05, 0.05 + s.scanStep * 0.01);
+      const PENTA_STEPS = [0, 3, 5, 7, 10, 12, 15, 17, 19, 22, 24];
 
       for (let b = 0; b < bands; b++) {
         const yStart = Math.floor(b * rowsPerBand);
@@ -594,8 +597,8 @@ function Index() {
           brightness: Math.pow(above, Math.max(0.4, s.contrast)),
           hue: hs,
           saturation: st,
-          edges: ed,
-          texture: tx,
+          edges: Math.min(1, ed),
+          texture: Math.min(1, tx),
         };
         const mappedValue = (parameter: SoundParameter, neutral = 0.5) => {
           let weighted = 0;
@@ -610,36 +613,46 @@ function Index() {
           return weighted / amount;
         };
 
-        const volumeShape = mappedValue("volume", 1);
-        const target = volumeShape * s.volume * (2.2 / Math.sqrt(bands));
-        const durationShape = mappedValue("duration", 0.5);
-        const responseTime = Math.min(0.8, Math.max(0.012, glide * Math.pow(2, (durationShape - 0.5) * 6)));
-
         const v = voices[b]!;
+
+        // Громкость: мягкая кривая + шумовой порог, чтобы тихие полосы молчали
+        const volumeShape = mappedValue("volume", 1);
+        const gated = volumeShape < 0.04 ? 0 : (volumeShape - 0.04) / 0.96;
+        const target = Math.pow(gated, 1.3) * s.volume * (1.6 / Math.sqrt(bands));
+        const durationShape = mappedValue("duration", 0.5);
+        const responseTime = Math.min(1.2, Math.max(0.04, glide * Math.pow(2, (durationShape - 0.5) * 4)));
+
         v.level = v.level * smooth + target * (1 - smooth);
         v.gain.gain.setTargetAtTime(Math.max(0.00005, v.level), now, responseTime);
 
+        // Высота: квантуем в пентатонику — без «воя» между нотами
         const pitchShape = mappedValue("pitch", 0.5);
-        const pitchSemitones = (pitchShape - 0.5) * 24;
         if (v.pitchOsc) {
-          v.pitchOsc.frequency.setTargetAtTime(v.baseFreq * Math.pow(2, pitchSemitones / 12), now, responseTime);
+          const span = (pitchShape - 0.5) * 2; // -1..1
+          const idx = Math.round(Math.abs(span) * 5);
+          const semiRaw = (PENTA_STEPS[Math.min(PENTA_STEPS.length - 1, idx)] ?? 0) * Math.sign(span);
+          v.semi = v.semi * 0.85 + semiRaw * 0.15;
+          const quant = Math.round(v.semi);
+          v.pitchOsc.frequency.setTargetAtTime(v.baseFreq * Math.pow(2, quant / 12), now, Math.max(0.08, responseTime));
         }
 
+        // Тембр: плавный фильтр без резких скачков резонанса
         const timbreShape = mappedValue("timbre", 0.5);
         const timbreAmount = (timbreShape - 0.5) * 2;
-        const cutoff = Math.min(14000, Math.max(200, s.filterFreq * Math.pow(2, timbreAmount * 3)));
-        v.filter.frequency.setTargetAtTime(cutoff, now, 0.08);
-        v.filter.Q.setTargetAtTime(Math.min(18, Math.max(0.1, s.filterQ * (1 + timbreAmount * 0.55))), now, 0.12);
+        const cutoffTarget = Math.min(9000, Math.max(Math.min(900, v.baseFreq * 2), s.filterFreq * Math.pow(2, timbreAmount * 1.6)));
+        v.cutoff = v.cutoff * 0.85 + cutoffTarget * 0.15;
+        v.filter.frequency.setTargetAtTime(v.cutoff, now, 0.15);
+        v.filter.Q.setTargetAtTime(Math.min(6, Math.max(0.3, s.filterQ * (1 + timbreAmount * 0.25))), now, 0.25);
 
-        // Высокий тембральный сигнал открывает шумовой слой, сохраняя общий регулятор детализации.
-        const textureLevel = Math.max(0, timbreAmount) * Math.max(ed, tx);
-        const nTarget = textureLevel * volumeShape * s.detail * s.volume * (1.6 / Math.sqrt(bands));
-        v.noiseLevel = v.noiseLevel * smooth + nTarget * (1 - smooth);
-        v.noiseGain.gain.setTargetAtTime(Math.max(0.00005, v.noiseLevel), now, responseTime);
+        // Текстурный шум — только как лёгкий призвук
+        const textureLevel = Math.max(0, Math.min(1, (features.edges * 0.6 + features.texture * 0.4)));
+        const nTarget = textureLevel * gated * s.detail * s.volume * (0.5 / Math.sqrt(bands));
+        v.noiseLevel = v.noiseLevel * Math.max(smooth, 0.9) + nTarget * (1 - Math.max(smooth, 0.9));
+        v.noiseGain.gain.setTargetAtTime(Math.max(0.00005, v.noiseLevel), now, Math.max(0.12, responseTime));
         v.noiseFilter.frequency.setTargetAtTime(
-          Math.min(15000, v.baseFreq * (2 + textureLevel * 6)),
+          Math.min(9000, v.baseFreq * (2 + textureLevel * 3)),
           now,
-          0.1,
+          0.2,
         );
       }
     },
