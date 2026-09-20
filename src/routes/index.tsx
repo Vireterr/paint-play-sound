@@ -45,8 +45,6 @@ type SonificationSettings = {
   delayTime: number;
   delayFeedback: number;
   minBrightness: number;
-  detail: number; // 0..1 — количество текстуры/шума от мелких деталей
-  contrast: number; // 0.5..3 — контраст яркости → громкость
 };
 
 type Stroke = {
@@ -81,8 +79,6 @@ const DEFAULT_SONIFICATION: SonificationSettings = {
   delayTime: 0,
   delayFeedback: 0,
   minBrightness: 20,
-  detail: 0.35,
-  contrast: 1.4,
 };
 
 function makeDistortionCurve(amount: number) {
@@ -176,13 +172,14 @@ function Index() {
   const noiseBufferRef = useRef<AudioBuffer | null>(null);
 
   const [presets, setPresets] = useState<SoundPreset[]>(DEFAULT_PRESETS);
-  const [currentPresetId, setCurrentPresetId] = useState(DEFAULT_PRESETS[0]!.id);
+  const [currentPresetId, setCurrentPresetId] = useState(DEFAULT_PRESETS[0].id);
   const [showSettings, setShowSettings] = useState(false);
 
   const [bgImage, setBgImage] = useState<HTMLImageElement | null>(null);
   const [imageSonification, setImageSonification] = useState(false);
   const [sonSettings, setSonSettings] = useState<SonificationSettings>(DEFAULT_SONIFICATION);
   const [showSonSettings, setShowSonSettings] = useState(false);
+  const lastSonifyXRef = useRef(-1);
 
   const [mode, setMode] = useState<"draw" | "edit">("draw");
   const [playing, setPlaying] = useState(true);
@@ -204,7 +201,7 @@ function Index() {
   const sonSettingsRef = useRef(sonSettings);
   useEffect(() => { sonSettingsRef.current = sonSettings; }, [sonSettings]);
 
-  const currentPreset = presets.find(p => p.id === currentPresetId) ?? presets[0] ?? DEFAULT_PRESETS[0]!;
+  const currentPreset = presets.find(p => p.id === currentPresetId) ?? presets[0];
 
   const ensureAudio = useCallback(() => {
     if (!audioRef.current) {
@@ -315,254 +312,153 @@ function Index() {
     [ensureAudio],
   );
 
-  // ---- Качественная сонификация изображения: предрасчёт + непрерывный банк голосов ----
-  const analysisRef = useRef<{
-    cols: number; rows: number;
-    lum: Float32Array; r: Float32Array; g: Float32Array; b: Float32Array;
-    det: Float32Array; sat: Float32Array;
-  } | null>(null);
+  const sonifyColumn = useCallback(
+    (canvasX: number) => {
+      if (!bgImage || !imageSonification) return;
+      const canvas = canvasRef.current;
+      if (!canvas) return;
 
-  useEffect(() => {
-    if (!bgImage) { analysisRef.current = null; return; }
-    // Высокое разрешение анализа — больше деталей по горизонтали и вертикали
-    const COLS = 1024;
-    const ROWS = 256;
-    const off = document.createElement("canvas");
-    off.width = COLS;
-    off.height = ROWS;
-    const octx = off.getContext("2d", { willReadFrequently: true })!;
-    octx.imageSmoothingEnabled = true;
-    octx.imageSmoothingQuality = "high";
-    octx.drawImage(bgImage, 0, 0, COLS, ROWS);
-    const d = octx.getImageData(0, 0, COLS, ROWS).data;
-    const n = COLS * ROWS;
-    const lum = new Float32Array(n), rr = new Float32Array(n), gg = new Float32Array(n), bb = new Float32Array(n);
-    const det = new Float32Array(n), sat = new Float32Array(n);
-    for (let i = 0; i < n; i++) {
-      const o = i * 4;
-      const a = (d[o + 3] ?? 255) / 255;
-      const r = (d[o] ?? 0) * a, g = (d[o + 1] ?? 0) * a, b = (d[o + 2] ?? 0) * a;
-      rr[i] = r; gg[i] = g; bb[i] = b;
-      lum[i] = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
-      const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
-      sat[i] = mx <= 0 ? 0 : (mx - mn) / mx;
-    }
-    // Детализация: модуль градиента (края и текстура)
-    for (let y = 0; y < ROWS; y++) {
-      for (let x = 0; x < COLS; x++) {
-        const i = y * COLS + x;
-        const l = lum[i] ?? 0;
-        const lx = lum[y * COLS + Math.min(COLS - 1, x + 1)] ?? l;
-        const ly = lum[Math.min(ROWS - 1, y + 1) * COLS + x] ?? l;
-        det[i] = Math.min(1, (Math.abs(lx - l) + Math.abs(ly - l)) * 3);
-      }
-    }
-    analysisRef.current = { cols: COLS, rows: ROWS, lum, r: rr, g: gg, b: bb, det, sat };
-  }, [bgImage]);
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
 
-  type SonVoice = {
-    osc: AudioNode; gain: GainNode; filter: BiquadFilterNode; pan: StereoPannerNode; level: number;
-    noiseGain: GainNode; noiseFilter: BiquadFilterNode; baseFreq: number; noiseLevel: number;
-  };
-  const sonVoicesRef = useRef<SonVoice[] | null>(null);
-  const sonBusRef = useRef<GainNode | null>(null);
+      const w = canvas.clientWidth;
+      const h = canvas.clientHeight;
 
-  const teardownSonVoices = useCallback(() => {
-    const voices = sonVoicesRef.current;
-    if (voices) {
-      for (const v of voices) {
-        try {
-          v.gain.gain.cancelScheduledValues(0);
-          v.gain.gain.value = 0;
-          (v.osc as OscillatorNode).stop?.();
-        } catch { /* noop */ }
-        try { v.pan.disconnect(); } catch { /* noop */ }
-      }
-    }
-    sonVoicesRef.current = null;
-    try { sonBusRef.current?.disconnect(); } catch { /* noop */ }
-    sonBusRef.current = null;
-  }, []);
+      const offCanvas = document.createElement("canvas");
+      offCanvas.width = w;
+      offCanvas.height = h;
+      const offCtx = offCanvas.getContext("2d")!;
+      offCtx.drawImage(bgImage, 0, 0, w, h);
 
-  const buildSonVoices = useCallback(() => {
-    const ctx = ensureAudio();
-    const master = masterRef.current;
-    if (!master) return;
-    teardownSonVoices();
+      const imgData = offCtx.getImageData(canvasX, 0, 1, h);
+      const data = imgData.data;
 
-    const s = sonSettingsRef.current;
-    const bus = ctx.createGain();
-    bus.gain.value = 1;
-    const comp = ctx.createDynamicsCompressor();
-    comp.threshold.value = -18;
-    comp.knee.value = 24;
-    comp.ratio.value = 6;
-    comp.attack.value = 0.01;
-    comp.release.value = 0.25;
-    bus.connect(comp);
-    comp.connect(master);
+      const audioCtx = ensureAudio();
+      const master = masterRef.current;
+      if (!master) return;
 
-    if (s.delayTime > 0 && s.delayFeedback > 0) {
-      const delay = ctx.createDelay(1.5);
-      delay.delayTime.value = s.delayTime;
-      const fb = ctx.createGain();
-      fb.gain.value = Math.min(0.7, s.delayFeedback);
-      const wet = ctx.createGain();
-      wet.gain.value = 0.35;
-      bus.connect(delay);
-      delay.connect(fb);
-      fb.connect(delay);
-      delay.connect(wet);
-      wet.connect(comp);
-    }
-    sonBusRef.current = bus;
+      const settings = sonSettingsRef.current;
+      const BANDS = settings.bands;
+      const bandHeight = Math.floor(h / BANDS);
+      const now = audioCtx.currentTime;
+      const dur = 0.12;
 
-    // Приятная пентатоника, снизу вверх
-    const PENTA = [0, 3, 5, 7, 10];
-    const baseFreqs: Record<number, number> = { 2: 65.41, 3: 130.81, 4: 261.63, 5: 523.25 };
-    const baseFreq = baseFreqs[s.baseOctave] ?? 130.81;
-    const now = ctx.currentTime;
-    const voices: SonVoice[] = [];
+      // Базовая частота от октавы
+      const baseFreqs: Record<number, number> = {
+        2: 65.41,  // C2
+        3: 130.81, // C3
+        4: 261.63, // C4
+        5: 523.25, // C5
+      };
+      const baseFreq = baseFreqs[settings.baseOctave] ?? 130.81;
 
-    for (let b = 0; b < s.bands; b++) {
-      const degree = s.bands - 1 - b; // верхняя полоса = высокая нота
-      const semi = (PENTA[degree % 5] ?? 0) + 12 * Math.floor(degree / 5);
-      const freq = baseFreq * Math.pow(2, semi / 12);
+      for (let b = 0; b < BANDS; b++) {
+        let totalBrightness = 0;
+        let totalR = 0, totalG = 0, totalB = 0;
+        let pixelCount = 0;
 
-      const type: OscType = s.oscType === "auto" ? (b % 2 === 0 ? "triangle" : "sine") : s.oscType;
-      let src: AudioNode;
-      if (type === "noise") {
-        const noise = ctx.createBufferSource();
-        noise.buffer = noiseBufferRef.current!;
-        noise.loop = true;
-        noise.start(now);
-        src = noise;
-      } else if (type === "pulse") {
-        const osc = ctx.createOscillator();
-        osc.setPeriodicWave(createPulseWave(ctx, 0.35));
-        osc.frequency.value = freq;
-        osc.detune.value = (b % 2 === 0 ? 4 : -4);
-        osc.start(now);
-        src = osc;
-      } else {
-        const osc = ctx.createOscillator();
-        osc.type = type as OscillatorType;
-        osc.frequency.value = freq;
-        osc.detune.value = (b % 2 === 0 ? 4 : -4);
-        osc.start(now);
-        src = osc;
-      }
-
-      const filter = ctx.createBiquadFilter();
-      filter.type = "lowpass";
-      filter.frequency.value = Math.max(freq * 2, s.filterFreq);
-      filter.Q.value = Math.min(6, s.filterQ);
-
-      const gain = ctx.createGain();
-      gain.gain.value = 0.0001;
-
-      const pan = ctx.createStereoPanner();
-      pan.pan.value = s.bands > 1 ? ((b / (s.bands - 1)) * 1.4 - 0.7) : 0;
-
-      // Текстурный слой: мелкие детали изображения → полосовой шум на частоте голоса
-      const noiseSrc = ctx.createBufferSource();
-      noiseSrc.buffer = noiseBufferRef.current!;
-      noiseSrc.loop = true;
-      noiseSrc.start(now);
-      const noiseFilter = ctx.createBiquadFilter();
-      noiseFilter.type = "bandpass";
-      noiseFilter.frequency.value = freq * 2;
-      noiseFilter.Q.value = 6;
-      const noiseGain = ctx.createGain();
-      noiseGain.gain.value = 0.0001;
-      noiseSrc.connect(noiseFilter);
-      noiseFilter.connect(noiseGain);
-      noiseGain.connect(pan);
-
-      src.connect(filter);
-      filter.connect(gain);
-      gain.connect(pan);
-      pan.connect(bus);
-
-      voices.push({ osc: src, gain, filter, pan, level: 0, noiseGain, noiseFilter, baseFreq: freq, noiseLevel: 0 });
-    }
-    sonVoicesRef.current = voices;
-  }, [ensureAudio, teardownSonVoices]);
-
-  useEffect(() => {
-    if (bgImage && imageSonification) buildSonVoices();
-    else teardownSonVoices();
-    return () => { if (!bgImage || !imageSonification) teardownSonVoices(); };
-  }, [bgImage, imageSonification, buildSonVoices, teardownSonVoices, sonSettings.bands, sonSettings.oscType, sonSettings.baseOctave, sonSettings.delayTime, sonSettings.delayFeedback]);
-
-  // Плавное обновление голосов по позиции сканера (0..1)
-  const updateSonification = useCallback(
-    (progress: number) => {
-      const an = analysisRef.current;
-      const voices = sonVoicesRef.current;
-      const ctx = audioRef.current;
-      if (!an || !voices || !ctx) return;
-      const s = sonSettingsRef.current;
-      const bands = voices.length;
-      const now = ctx.currentTime;
-
-      // Окно сканирования: «Шаг сканирования» задаёт ширину читаемой полосы пикселей
-      const xf = Math.min(an.cols - 1, Math.max(0, progress * (an.cols - 1)));
-      const half = Math.max(0, Math.round((s.scanStep - 1) / 2));
-      const xFrom = Math.max(0, Math.round(xf) - half);
-      const xTo = Math.min(an.cols - 1, Math.round(xf) + half);
-      const rowsPerBand = an.rows / bands;
-      const minL = s.minBrightness / 255;
-      // реакция сглаживания: мелкий шаг = быстрее и детальнее
-      const smooth = Math.min(0.9, 0.45 + s.scanStep * 0.02);
-      const glide = Math.max(0.02, 0.02 + s.scanStep * 0.006);
-
-      for (let b = 0; b < bands; b++) {
-        const yStart = Math.floor(b * rowsPerBand);
-        const yEnd = Math.max(yStart + 1, Math.floor((b + 1) * rowsPerBand));
-        let lum = 0, lum2 = 0, rs = 0, gs = 0, bs = 0, dt = 0, st = 0, cnt = 0;
-        for (let y = yStart; y < yEnd; y++) {
-          const row = y * an.cols;
-          for (let x = xFrom; x <= xTo; x++) {
-            const i = row + x;
-            const l = an.lum[i] ?? 0;
-            lum += l; lum2 += l * l;
-            rs += an.r[i] ?? 0; gs += an.g[i] ?? 0; bs += an.b[i] ?? 0;
-            dt += an.det[i] ?? 0; st += an.sat[i] ?? 0;
-            cnt++;
-          }
+        for (let y = b * bandHeight; y < (b + 1) * bandHeight && y < h; y++) {
+          const idx = y * 4;
+          const r = data[idx]!;
+          const g = data[idx + 1]!;
+          const bl = data[idx + 2]!;
+          const alpha = data[idx + 3]!;
+          
+          if (alpha < 30) continue;
+          
+          const brightness = (r + g + bl) / 3;
+          totalBrightness += brightness;
+          totalR += r;
+          totalG += g;
+          totalB += bl;
+          pixelCount++;
         }
-        if (cnt === 0) continue;
-        lum /= cnt; lum2 /= cnt; rs /= cnt; gs /= cnt; bs /= cnt; dt /= cnt; st /= cnt;
-        const variance = Math.max(0, lum2 - lum * lum);
 
-        const above = lum <= minL ? 0 : (lum - minL) / Math.max(0.001, 1 - minL);
-        // контраст из настроек управляет кривой громкости
-        const target = Math.pow(above, Math.max(0.4, s.contrast)) * s.volume * (2.2 / Math.sqrt(bands));
+        if (pixelCount === 0) continue;
 
-        const v = voices[b]!;
-        v.level = v.level * smooth + target * (1 - smooth);
-        v.gain.gain.setTargetAtTime(Math.max(0.00005, v.level), now, glide);
+        const avgBrightness = totalBrightness / pixelCount;
+        const avgR = totalR / pixelCount;
+        const avgG = totalG / pixelCount;
+        const avgB = totalB / pixelCount;
 
-        // тембр: тёплые цвета — темнее фильтр, холодные — ярче; насыщенность добавляет блеск
-        const warmth = (bs - rs) / 255; // -1..1
-        const cutoff = Math.min(14000, Math.max(200, s.filterFreq * Math.pow(2, warmth * 1.2 + above * 0.8 + st * 0.6)));
-        v.filter.frequency.setTargetAtTime(cutoff, now, 0.08);
-        v.filter.Q.setTargetAtTime(Math.min(18, Math.max(0.1, s.filterQ * (0.6 + st))), now, 0.12);
+        if (avgBrightness < settings.minBrightness) continue;
 
-        // текстура: края и разброс яркости → полосовой шум
-        const texture = Math.min(1, dt * 1.5 + Math.sqrt(variance) * 2.5);
-        const nTarget = texture * above * s.detail * s.volume * (1.6 / Math.sqrt(bands));
-        v.noiseLevel = v.noiseLevel * smooth + nTarget * (1 - smooth);
-        v.noiseGain.gain.setTargetAtTime(Math.max(0.00005, v.noiseLevel), now, glide);
-        v.noiseFilter.frequency.setTargetAtTime(
-          Math.min(15000, v.baseFreq * (2 + texture * 6)),
-          now,
-          0.1,
-        );
+        const noteIdx = Math.round((1 - avgBrightness / 255) * (SCALE.length - 1));
+        const semitone = SCALE[Math.max(0, Math.min(SCALE.length - 1, noteIdx))] ?? 0;
+        const freq = baseFreq * Math.pow(2, semitone / 12);
+
+        const vol = (avgBrightness / 255) * settings.volume;
+
+        let oscType: OscillatorType;
+        if (settings.oscType === "auto") {
+          if (avgR > avgG && avgR > avgB) oscType = "sawtooth";
+          else if (avgG > avgR && avgG > avgB) oscType = "triangle";
+          else if (avgB > avgR && avgB > avgG) oscType = "square";
+          else oscType = "sine";
+        } else {
+          oscType = settings.oscType;
+        }
+
+        let sourceNode: AudioNode;
+        if (oscType === "noise") {
+          const noise = audioCtx.createBufferSource();
+          noise.buffer = noiseBufferRef.current!;
+          noise.loop = true;
+          sourceNode = noise;
+          noise.start(now);
+          noise.stop(now + dur + 0.05);
+        } else if (oscType === "pulse") {
+          const osc = audioCtx.createOscillator();
+          osc.setPeriodicWave(createPulseWave(audioCtx, 0.5));
+          osc.frequency.setValueAtTime(freq, now);
+          sourceNode = osc;
+          osc.start(now);
+          osc.stop(now + dur + 0.05);
+        } else {
+          const osc = audioCtx.createOscillator();
+          osc.type = oscType;
+          osc.frequency.setValueAtTime(freq, now);
+          sourceNode = osc;
+          osc.start(now);
+          osc.stop(now + dur + 0.05);
+        }
+
+        const filter = audioCtx.createBiquadFilter();
+        filter.type = "lowpass";
+        filter.frequency.setValueAtTime(settings.filterFreq, now);
+        filter.Q.value = settings.filterQ;
+
+        const gain = audioCtx.createGain();
+        gain.gain.setValueAtTime(0.0001, now);
+        gain.gain.exponentialRampToValueAtTime(vol, now + 0.01);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+
+        const pan = audioCtx.createStereoPanner();
+        pan.pan.value = (b / BANDS) * 2 - 1;
+
+        let delayNode: DelayNode | null = null;
+        let feedbackNode: GainNode | null = null;
+        if (settings.delayTime > 0 && settings.delayFeedback > 0) {
+          delayNode = audioCtx.createDelay(1.5);
+          delayNode.delayTime.value = settings.delayTime;
+          feedbackNode = audioCtx.createGain();
+          feedbackNode.gain.value = settings.delayFeedback;
+          delayNode.connect(feedbackNode);
+          feedbackNode.connect(delayNode);
+        }
+
+        sourceNode.connect(filter);
+        filter.connect(gain);
+        gain.connect(pan);
+        pan.connect(master);
+
+        if (delayNode && feedbackNode) {
+          gain.connect(delayNode);
+          delayNode.connect(master);
+        }
       }
     },
-    [],
+    [bgImage, imageSonification, ensureAudio],
   );
 
   useEffect(() => {
@@ -655,13 +551,12 @@ function Index() {
         }
 
         if (imageSonification && bgImage) {
-          updateSonification(x / Math.max(1, w));
-        }
-      } else if (sonVoicesRef.current && audioRef.current) {
-        const nowT = audioRef.current.currentTime;
-        for (const v of sonVoicesRef.current) {
-          v.level = 0;
-          v.gain.gain.setTargetAtTime(0.00005, nowT, 0.05);
+          const currentX = Math.floor(x);
+          const step = sonSettingsRef.current.scanStep;
+          if (currentX !== lastSonifyXRef.current && currentX % step === 0) {
+            sonifyColumn(currentX);
+            lastSonifyXRef.current = currentX;
+          }
         }
       }
 
@@ -717,7 +612,7 @@ function Index() {
       cancelAnimationFrame(raf);
       window.removeEventListener("resize", resize);
     };
-  }, [playNote, bgImage, imageSonification, updateSonification]);
+  }, [playNote, bgImage, imageSonification, sonifyColumn]);
 
   const pos = (e: React.PointerEvent<HTMLCanvasElement>): Pt => {
     const r = e.currentTarget.getBoundingClientRect();
@@ -860,7 +755,7 @@ function Index() {
     if (presets.length <= 1) return;
     const newPresets = presets.filter(p => p.id !== id);
     setPresets(newPresets);
-    if (currentPresetId === id) setCurrentPresetId(newPresets[0]!.id);
+    if (currentPresetId === id) setCurrentPresetId(newPresets[0].id);
   };
 
   const updatePreset = (id: string, updates: Partial<SoundPreset>) => {
@@ -1146,14 +1041,6 @@ function Index() {
                   <div className="flex flex-col gap-1">
                     <label className="text-xs text-muted-foreground">Громкость: {Math.round(sonSettings.volume * 100)}%</label>
                     <input type="range" min={0} max={30} step={1} value={sonSettings.volume * 100} onChange={(e) => updateSonSettings({ volume: Number(e.target.value) / 100 })} />
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    <label className="text-xs text-muted-foreground">Детализация: {Math.round(sonSettings.detail * 100)}%</label>
-                    <input type="range" min={0} max={100} step={5} value={sonSettings.detail * 100} onChange={(e) => updateSonSettings({ detail: Number(e.target.value) / 100 })} />
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    <label className="text-xs text-muted-foreground">Контраст: {sonSettings.contrast.toFixed(1)}×</label>
-                    <input type="range" min={0.5} max={3} step={0.1} value={sonSettings.contrast} onChange={(e) => updateSonSettings({ contrast: Number(e.target.value) })} />
                   </div>
                   <div className="flex flex-col gap-1">
                     <label className="text-xs text-muted-foreground">Шаг сканирования: {sonSettings.scanStep} px</label>
