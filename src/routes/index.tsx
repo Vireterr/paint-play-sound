@@ -113,14 +113,28 @@ const DEFAULT_SONIFICATION: SonificationSettings = {
   mappings: DEFAULT_MAPPINGS,
 };
 
+// Мягкое насыщение (tanh) с нормализацией — вместо резкого клиппинга
 function makeDistortionCurve(amount: number) {
-  const k = typeof amount === "number" ? amount : 50;
-  const n_samples = 44100;
-  const curve = new Float32Array(n_samples);
-  const deg = Math.PI / 180;
-  for (let i = 0; i < n_samples; ++i) {
-    const x = (i * 2) / n_samples - 1;
-    curve[i] = ((3 + k) * x * 20 * deg) / (Math.PI + k * Math.abs(x));
+  const drive = 1 + Math.max(0, Math.min(100, amount)) * 0.25;
+  const n = 2048;
+  const curve = new Float32Array(n);
+  const norm = Math.tanh(drive);
+  for (let i = 0; i < n; i++) {
+    const x = (i * 2) / (n - 1) - 1;
+    curve[i] = Math.tanh(x * drive) / norm;
+  }
+  return curve;
+}
+
+// Биткрашер: ступенчатая кривая квантования (0 = выкл, 1..8 бит)
+function makeBitcrushCurve(bits: number) {
+  const b = Math.max(1, Math.min(8, Math.round(bits)));
+  const levels = Math.pow(2, b);
+  const n = 2048;
+  const curve = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const x = (i * 2) / (n - 1) - 1;
+    curve[i] = Math.round(x * levels) / levels;
   }
   return curve;
 }
