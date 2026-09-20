@@ -539,7 +539,7 @@ function Index() {
       gain.connect(pan);
       pan.connect(bus);
 
-      voices.push({ osc: src, pitchOsc, gain, filter, pan, level: 0, noiseGain, noiseFilter, baseFreq: freq, noiseLevel: 0 });
+      voices.push({ osc: src, pitchOsc, gain, filter, pan, level: 0, noiseGain, noiseFilter, baseFreq: freq, noiseLevel: 0, cutoff: Math.max(freq * 2, s.filterFreq), semi: 0 });
     }
     sonVoicesRef.current = voices;
   }, [ensureAudio, teardownSonVoices]);
