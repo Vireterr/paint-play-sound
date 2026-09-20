@@ -1253,7 +1253,7 @@ function Index() {
                 </div>
                 <div className="flex flex-col gap-1">
                   <label className="text-xs text-muted-foreground">Bitcrusher: {currentPreset.bitcrusher} бит</label>
-                  <input type="range" min={0} max={16} step={1} value={currentPreset.bitcrusher} onChange={(e) => updatePreset(currentPreset.id, { bitcrusher: Number(e.target.value) })} />
+                  <input type="range" min={0} max={8} step={1} value={currentPreset.bitcrusher} onChange={(e) => updatePreset(currentPreset.id, { bitcrusher: Number(e.target.value) })} />
                 </div>
                 <div className="flex flex-col gap-1">
                   <label className="text-xs text-muted-foreground">Эхо: {(currentPreset.delayTime * 1000).toFixed(0)} мс</label>
