@@ -89,12 +89,12 @@ const SOUND_PARAMETERS: { key: SoundParameter; label: string }[] = [
 ];
 
 const DEFAULT_PRESETS: SoundPreset[] = [
-  { id: "sega-lead", name: "SEGA Lead", hue: 0, oscType: "sawtooth", pulseWidth: 0.5, filterFreq: 2000, filterQ: 5, distortion: 10, bitcrusher: 0, delayTime: 0.1, delayFeedback: 0.2, volume: 0.3 },
-  { id: "nes-square", name: "NES Square", hue: 210, oscType: "square", pulseWidth: 0.5, filterFreq: 1500, filterQ: 2, distortion: 0, bitcrusher: 0, delayTime: 0, delayFeedback: 0, volume: 0.25 },
-  { id: "gameboy-arp", name: "Game Boy Arp", hue: 120, oscType: "triangle", pulseWidth: 0.5, filterFreq: 1000, filterQ: 3, distortion: 0, bitcrusher: 0, delayTime: 0.15, delayFeedback: 0.3, volume: 0.28 },
-  { id: "chiptune-bass", name: "Chiptune Bass", hue: 280, oscType: "square", pulseWidth: 0.25, filterFreq: 400, filterQ: 8, distortion: 15, bitcrusher: 0, delayTime: 0.05, delayFeedback: 0.1, volume: 0.35 },
-  { id: "8bit-noise", name: "8-bit Noise", hue: 50, oscType: "noise", pulseWidth: 0.5, filterFreq: 3000, filterQ: 1, distortion: 0, bitcrusher: 4, delayTime: 0, delayFeedback: 0, volume: 0.2 },
-  { id: "pulse-wave", name: "Pulse Wave", hue: 170, oscType: "pulse", pulseWidth: 0.3, filterFreq: 1200, filterQ: 4, distortion: 8, bitcrusher: 0, delayTime: 0.2, delayFeedback: 0.25, volume: 0.27 },
+  { id: "sega-lead", name: "SEGA Lead", hue: 0, oscType: "sawtooth", pulseWidth: 0.5, filterFreq: 2600, filterQ: 1.2, distortion: 6, bitcrusher: 0, delayTime: 0.12, delayFeedback: 0.18, volume: 0.22 },
+  { id: "nes-square", name: "NES Square", hue: 210, oscType: "square", pulseWidth: 0.5, filterFreq: 2200, filterQ: 0.8, distortion: 0, bitcrusher: 0, delayTime: 0, delayFeedback: 0, volume: 0.2 },
+  { id: "gameboy-arp", name: "Game Boy Arp", hue: 120, oscType: "triangle", pulseWidth: 0.5, filterFreq: 3000, filterQ: 0.7, distortion: 0, bitcrusher: 0, delayTime: 0.16, delayFeedback: 0.25, volume: 0.26 },
+  { id: "chiptune-bass", name: "Chiptune Bass", hue: 280, oscType: "square", pulseWidth: 0.3, filterFreq: 700, filterQ: 2, distortion: 4, bitcrusher: 0, delayTime: 0.05, delayFeedback: 0.1, volume: 0.24 },
+  { id: "8bit-noise", name: "8-bit Noise", hue: 50, oscType: "noise", pulseWidth: 0.5, filterFreq: 2400, filterQ: 0.7, distortion: 0, bitcrusher: 6, delayTime: 0, delayFeedback: 0, volume: 0.14 },
+  { id: "pulse-wave", name: "Pulse Wave", hue: 170, oscType: "pulse", pulseWidth: 0.35, filterFreq: 1800, filterQ: 1, distortion: 3, bitcrusher: 0, delayTime: 0.2, delayFeedback: 0.22, volume: 0.2 },
 ];
 
 const DEFAULT_SONIFICATION: SonificationSettings = {
