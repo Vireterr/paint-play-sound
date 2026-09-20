@@ -89,12 +89,12 @@ const SOUND_PARAMETERS: { key: SoundParameter; label: string }[] = [
 ];
 
 const DEFAULT_PRESETS: SoundPreset[] = [
-  { id: "sega-lead", name: "SEGA Lead", hue: 0, oscType: "sawtooth", pulseWidth: 0.5, filterFreq: 2000, filterQ: 5, distortion: 10, bitcrusher: 0, delayTime: 0.1, delayFeedback: 0.2, volume: 0.3 },
-  { id: "nes-square", name: "NES Square", hue: 210, oscType: "square", pulseWidth: 0.5, filterFreq: 1500, filterQ: 2, distortion: 0, bitcrusher: 0, delayTime: 0, delayFeedback: 0, volume: 0.25 },
-  { id: "gameboy-arp", name: "Game Boy Arp", hue: 120, oscType: "triangle", pulseWidth: 0.5, filterFreq: 1000, filterQ: 3, distortion: 0, bitcrusher: 0, delayTime: 0.15, delayFeedback: 0.3, volume: 0.28 },
-  { id: "chiptune-bass", name: "Chiptune Bass", hue: 280, oscType: "square", pulseWidth: 0.25, filterFreq: 400, filterQ: 8, distortion: 15, bitcrusher: 0, delayTime: 0.05, delayFeedback: 0.1, volume: 0.35 },
-  { id: "8bit-noise", name: "8-bit Noise", hue: 50, oscType: "noise", pulseWidth: 0.5, filterFreq: 3000, filterQ: 1, distortion: 0, bitcrusher: 4, delayTime: 0, delayFeedback: 0, volume: 0.2 },
-  { id: "pulse-wave", name: "Pulse Wave", hue: 170, oscType: "pulse", pulseWidth: 0.3, filterFreq: 1200, filterQ: 4, distortion: 8, bitcrusher: 0, delayTime: 0.2, delayFeedback: 0.25, volume: 0.27 },
+  { id: "sega-lead", name: "SEGA Lead", hue: 0, oscType: "sawtooth", pulseWidth: 0.5, filterFreq: 2600, filterQ: 1.2, distortion: 6, bitcrusher: 0, delayTime: 0.12, delayFeedback: 0.18, volume: 0.22 },
+  { id: "nes-square", name: "NES Square", hue: 210, oscType: "square", pulseWidth: 0.5, filterFreq: 2200, filterQ: 0.8, distortion: 0, bitcrusher: 0, delayTime: 0, delayFeedback: 0, volume: 0.2 },
+  { id: "gameboy-arp", name: "Game Boy Arp", hue: 120, oscType: "triangle", pulseWidth: 0.5, filterFreq: 3000, filterQ: 0.7, distortion: 0, bitcrusher: 0, delayTime: 0.16, delayFeedback: 0.25, volume: 0.26 },
+  { id: "chiptune-bass", name: "Chiptune Bass", hue: 280, oscType: "square", pulseWidth: 0.3, filterFreq: 700, filterQ: 2, distortion: 4, bitcrusher: 0, delayTime: 0.05, delayFeedback: 0.1, volume: 0.24 },
+  { id: "8bit-noise", name: "8-bit Noise", hue: 50, oscType: "noise", pulseWidth: 0.5, filterFreq: 2400, filterQ: 0.7, distortion: 0, bitcrusher: 6, delayTime: 0, delayFeedback: 0, volume: 0.14 },
+  { id: "pulse-wave", name: "Pulse Wave", hue: 170, oscType: "pulse", pulseWidth: 0.35, filterFreq: 1800, filterQ: 1, distortion: 3, bitcrusher: 0, delayTime: 0.2, delayFeedback: 0.22, volume: 0.2 },
 ];
 
 const DEFAULT_SONIFICATION: SonificationSettings = {
@@ -113,14 +113,28 @@ const DEFAULT_SONIFICATION: SonificationSettings = {
   mappings: DEFAULT_MAPPINGS,
 };
 
+// Мягкое насыщение (tanh) с нормализацией — вместо резкого клиппинга
 function makeDistortionCurve(amount: number) {
-  const k = typeof amount === "number" ? amount : 50;
-  const n_samples = 44100;
-  const curve = new Float32Array(n_samples);
-  const deg = Math.PI / 180;
-  for (let i = 0; i < n_samples; ++i) {
-    const x = (i * 2) / n_samples - 1;
-    curve[i] = ((3 + k) * x * 20 * deg) / (Math.PI + k * Math.abs(x));
+  const drive = 1 + Math.max(0, Math.min(100, amount)) * 0.25;
+  const n = 2048;
+  const curve = new Float32Array(n);
+  const norm = Math.tanh(drive);
+  for (let i = 0; i < n; i++) {
+    const x = (i * 2) / (n - 1) - 1;
+    curve[i] = Math.tanh(x * drive) / norm;
+  }
+  return curve;
+}
+
+// Биткрашер: ступенчатая кривая квантования (0 = выкл, 1..8 бит)
+function makeBitcrushCurve(bits: number) {
+  const b = Math.max(1, Math.min(8, Math.round(bits)));
+  const levels = Math.pow(2, b);
+  const n = 2048;
+  const curve = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const x = (i * 2) / (n - 1) - 1;
+    curve[i] = Math.round(x * levels) / levels;
   }
   return curve;
 }
@@ -239,10 +253,18 @@ function Index() {
       const AC = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       const ctx = new AC();
       const master = ctx.createGain();
-      master.gain.value = 0.28;
+      master.gain.value = 0.5;
+      // Лимитер на выходе — защита от перегруза и «пердящего» клиппинга
+      const limiter = ctx.createDynamicsCompressor();
+      limiter.threshold.value = -6;
+      limiter.knee.value = 6;
+      limiter.ratio.value = 12;
+      limiter.attack.value = 0.003;
+      limiter.release.value = 0.2;
       const recDest = ctx.createMediaStreamDestination();
-      master.connect(ctx.destination);
-      master.connect(recDest);
+      master.connect(limiter);
+      limiter.connect(ctx.destination);
+      limiter.connect(recDest);
       audioRef.current = ctx;
       masterRef.current = master;
       recDestRef.current = recDest;
@@ -267,6 +289,7 @@ function Index() {
       const dur = Math.min(2.2, 0.18 + (n.len / Math.max(w, 1)) * 3.2);
       const now = ctx.currentTime;
 
+      const tail = dur + 0.12;
       let sourceNode: AudioNode;
       if (preset.oscType === "noise") {
         const noise = ctx.createBufferSource();
@@ -274,68 +297,103 @@ function Index() {
         noise.loop = true;
         sourceNode = noise;
         noise.start(now);
-        noise.stop(now + dur + 0.05);
+        noise.stop(now + tail);
       } else if (preset.oscType === "pulse") {
         const osc = ctx.createOscillator();
         osc.setPeriodicWave(createPulseWave(ctx, preset.pulseWidth));
         osc.frequency.setValueAtTime(freq, now);
         sourceNode = osc;
         osc.start(now);
-        osc.stop(now + dur + 0.05);
+        osc.stop(now + tail);
       } else {
         const osc = ctx.createOscillator();
         osc.type = preset.oscType as OscillatorType;
         osc.frequency.setValueAtTime(freq, now);
         sourceNode = osc;
         osc.start(now);
-        osc.stop(now + dur + 0.05);
+        osc.stop(now + tail);
       }
+
+      // Предусиление перед насыщением — контролируемый «драйв», а не клиппинг
+      const drive = ctx.createGain();
+      drive.gain.value = preset.distortion > 0 ? 1 + preset.distortion * 0.06 : 1;
+
+      const shaper = ctx.createWaveShaper();
+      if (preset.distortion > 0) {
+        shaper.curve = makeDistortionCurve(preset.distortion);
+        shaper.oversample = "4x";
+      }
+      const crusher = ctx.createWaveShaper();
+      if (preset.bitcrusher > 0) {
+        crusher.curve = makeBitcrushCurve(preset.bitcrusher);
+        crusher.oversample = "2x";
+      }
+      // Компенсация громкости после насыщения
+      const postGain = ctx.createGain();
+      postGain.gain.value = preset.distortion > 0 ? 1 / (1 + preset.distortion * 0.05) : 1;
 
       const filter = ctx.createBiquadFilter();
       filter.type = "lowpass";
-      filter.frequency.setValueAtTime(preset.filterFreq, now);
-      filter.Q.value = preset.filterQ;
-
-      const distortion = ctx.createWaveShaper();
-      if (preset.distortion > 0) {
-        distortion.curve = makeDistortionCurve(preset.distortion);
-        distortion.oversample = "4x";
-      }
+      filter.frequency.setValueAtTime(Math.max(freq * 1.5, Math.min(16000, preset.filterFreq)), now);
+      filter.Q.value = Math.min(8, Math.max(0.0001, preset.filterQ));
+      // Убираем «пердёж» — срезаем нижний гул
+      const hp = ctx.createBiquadFilter();
+      hp.type = "highpass";
+      hp.frequency.value = 45;
 
       const gain = ctx.createGain();
-      const peak = preset.volume * (0.5 + Math.min(0.5, n.len / 1600));
+      const peak = Math.min(0.5, preset.volume * (0.5 + Math.min(0.5, n.len / 1600)));
+      const attack = 0.012;
+      const decayEnd = now + dur;
       gain.gain.setValueAtTime(0.0001, now);
-      gain.gain.exponentialRampToValueAtTime(peak, now + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+      gain.gain.exponentialRampToValueAtTime(Math.max(0.001, peak), now + attack);
+      gain.gain.exponentialRampToValueAtTime(Math.max(0.001, peak * 0.6), now + attack + dur * 0.35);
+      gain.gain.exponentialRampToValueAtTime(0.0001, decayEnd);
+      gain.gain.setValueAtTime(0, decayEnd + 0.001);
 
       const pan = ctx.createStereoPanner();
       pan.pan.value = Math.max(-1, Math.min(1, (n.x / Math.max(w, 1)) * 2 - 1));
 
-      let delayNode: DelayNode | null = null;
-      let feedbackNode: GainNode | null = null;
-      if (preset.delayTime > 0 && preset.delayFeedback > 0) {
-        delayNode = ctx.createDelay(1.5);
-        delayNode.delayTime.value = preset.delayTime;
-        feedbackNode = ctx.createGain();
-        feedbackNode.gain.value = preset.delayFeedback;
-        delayNode.connect(feedbackNode);
-        feedbackNode.connect(delayNode);
-      }
-
-      sourceNode.connect(filter);
-      if (preset.distortion > 0) {
-        filter.connect(distortion);
-        distortion.connect(gain);
-      } else {
-        filter.connect(gain);
-      }
+      // Цепочка: источник → драйв → сатурация → биткраш → фильтры → огибающая → панорама
+      sourceNode.connect(drive);
+      let node: AudioNode = drive;
+      if (preset.distortion > 0) { node.connect(shaper); node = shaper; }
+      if (preset.bitcrusher > 0) { node.connect(crusher); node = crusher; }
+      node.connect(postGain);
+      postGain.connect(filter);
+      filter.connect(hp);
+      hp.connect(gain);
       gain.connect(pan);
       pan.connect(master);
 
-      if (delayNode && feedbackNode) {
+      let delayNode: DelayNode | null = null;
+      let wet: GainNode | null = null;
+      if (preset.delayTime > 0 && preset.delayFeedback > 0) {
+        delayNode = ctx.createDelay(1.5);
+        delayNode.delayTime.value = Math.min(1.2, preset.delayTime);
+        const fb = ctx.createGain();
+        fb.gain.value = Math.min(0.55, preset.delayFeedback);
+        // Демпфирование повторов, чтобы эхо не превращалось в кашу
+        const damp = ctx.createBiquadFilter();
+        damp.type = "lowpass";
+        damp.frequency.value = 2500;
+        wet = ctx.createGain();
+        wet.gain.value = 0.3;
         gain.connect(delayNode);
-        delayNode.connect(master);
+        delayNode.connect(damp);
+        damp.connect(fb);
+        fb.connect(delayNode);
+        delayNode.connect(wet);
+        wet.connect(master);
       }
+
+      // Освобождаем узлы — иначе эхо и фильтры копятся и превращаются в грязь
+      const cleanupIn = (tail + (delayNode ? 2.5 : 0.2)) * 1000;
+      window.setTimeout(() => {
+        for (const nd of [sourceNode, drive, shaper, crusher, postGain, filter, hp, gain, pan, delayNode, wet]) {
+          try { nd?.disconnect(); } catch { /* noop */ }
+        }
+      }, cleanupIn);
 
       if (!silentLabel)
         setLast(`${NOTE_NAMES[(3 + semitone) % 12]} · ${dur.toFixed(2)} с · ${preset.name}`);
@@ -943,7 +1001,7 @@ function Index() {
     const hue = Math.floor(Math.random() * 360);
     const newPreset: SoundPreset = {
       id: newId, name: `Цвет ${presets.length + 1}`, hue,
-      oscType: "sine", pulseWidth: 0.5, filterFreq: 800, filterQ: 3,
+      oscType: "sine", pulseWidth: 0.5, filterFreq: 2000, filterQ: 1,
       distortion: 0, bitcrusher: 0, delayTime: 0, delayFeedback: 0, volume: 0.28,
     };
     setPresets([...presets, newPreset]);
@@ -1182,7 +1240,7 @@ function Index() {
                 </div>
                 <div className="flex flex-col gap-1">
                   <label className="text-xs text-muted-foreground">Резонанс: {currentPreset.filterQ}</label>
-                  <input type="range" min={0.1} max={20} step={0.1} value={currentPreset.filterQ} onChange={(e) => updatePreset(currentPreset.id, { filterQ: Number(e.target.value) })} />
+                  <input type="range" min={0.1} max={8} step={0.1} value={currentPreset.filterQ} onChange={(e) => updatePreset(currentPreset.id, { filterQ: Number(e.target.value) })} />
                 </div>
                 <div className="flex flex-col gap-1">
                   <label className="text-xs text-muted-foreground">Дисторшн: {currentPreset.distortion}</label>
@@ -1190,7 +1248,7 @@ function Index() {
                 </div>
                 <div className="flex flex-col gap-1">
                   <label className="text-xs text-muted-foreground">Bitcrusher: {currentPreset.bitcrusher} бит</label>
-                  <input type="range" min={0} max={16} step={1} value={currentPreset.bitcrusher} onChange={(e) => updatePreset(currentPreset.id, { bitcrusher: Number(e.target.value) })} />
+                  <input type="range" min={0} max={8} step={1} value={currentPreset.bitcrusher} onChange={(e) => updatePreset(currentPreset.id, { bitcrusher: Number(e.target.value) })} />
                 </div>
                 <div className="flex flex-col gap-1">
                   <label className="text-xs text-muted-foreground">Эхо: {(currentPreset.delayTime * 1000).toFixed(0)} мс</label>
