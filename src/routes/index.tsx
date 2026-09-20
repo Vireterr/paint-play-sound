@@ -291,7 +291,6 @@ function Index() {
 
       const tail = dur + 0.12;
       let sourceNode: AudioNode;
-      let stopper: (() => void) | null = null;
       if (preset.oscType === "noise") {
         const noise = ctx.createBufferSource();
         noise.buffer = noiseBufferRef.current!;
@@ -299,7 +298,6 @@ function Index() {
         sourceNode = noise;
         noise.start(now);
         noise.stop(now + tail);
-        stopper = () => { try { noise.stop(); } catch { /* noop */ } };
       } else if (preset.oscType === "pulse") {
         const osc = ctx.createOscillator();
         osc.setPeriodicWave(createPulseWave(ctx, preset.pulseWidth));
@@ -307,7 +305,6 @@ function Index() {
         sourceNode = osc;
         osc.start(now);
         osc.stop(now + tail);
-        stopper = () => { try { osc.stop(); } catch { /* noop */ } };
       } else {
         const osc = ctx.createOscillator();
         osc.type = preset.oscType as OscillatorType;
@@ -315,9 +312,7 @@ function Index() {
         sourceNode = osc;
         osc.start(now);
         osc.stop(now + tail);
-        stopper = () => { try { osc.stop(); } catch { /* noop */ } };
       }
-      void stopper;
 
       // Предусиление перед насыщением — контролируемый «драйв», а не клиппинг
       const drive = ctx.createGain();
