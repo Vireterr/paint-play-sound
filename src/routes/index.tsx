@@ -253,10 +253,18 @@ function Index() {
       const AC = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       const ctx = new AC();
       const master = ctx.createGain();
-      master.gain.value = 0.28;
+      master.gain.value = 0.5;
+      // Лимитер на выходе — защита от перегруза и «пердящего» клиппинга
+      const limiter = ctx.createDynamicsCompressor();
+      limiter.threshold.value = -6;
+      limiter.knee.value = 6;
+      limiter.ratio.value = 12;
+      limiter.attack.value = 0.003;
+      limiter.release.value = 0.2;
       const recDest = ctx.createMediaStreamDestination();
-      master.connect(ctx.destination);
-      master.connect(recDest);
+      master.connect(limiter);
+      limiter.connect(ctx.destination);
+      limiter.connect(recDest);
       audioRef.current = ctx;
       masterRef.current = master;
       recDestRef.current = recDest;
