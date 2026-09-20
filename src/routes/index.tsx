@@ -289,75 +289,116 @@ function Index() {
       const dur = Math.min(2.2, 0.18 + (n.len / Math.max(w, 1)) * 3.2);
       const now = ctx.currentTime;
 
+      const tail = dur + 0.12;
       let sourceNode: AudioNode;
+      let stopper: (() => void) | null = null;
       if (preset.oscType === "noise") {
         const noise = ctx.createBufferSource();
         noise.buffer = noiseBufferRef.current!;
         noise.loop = true;
         sourceNode = noise;
         noise.start(now);
-        noise.stop(now + dur + 0.05);
+        noise.stop(now + tail);
+        stopper = () => { try { noise.stop(); } catch { /* noop */ } };
       } else if (preset.oscType === "pulse") {
         const osc = ctx.createOscillator();
         osc.setPeriodicWave(createPulseWave(ctx, preset.pulseWidth));
         osc.frequency.setValueAtTime(freq, now);
         sourceNode = osc;
         osc.start(now);
-        osc.stop(now + dur + 0.05);
+        osc.stop(now + tail);
+        stopper = () => { try { osc.stop(); } catch { /* noop */ } };
       } else {
         const osc = ctx.createOscillator();
         osc.type = preset.oscType as OscillatorType;
         osc.frequency.setValueAtTime(freq, now);
         sourceNode = osc;
         osc.start(now);
-        osc.stop(now + dur + 0.05);
+        osc.stop(now + tail);
+        stopper = () => { try { osc.stop(); } catch { /* noop */ } };
       }
+      void stopper;
+
+      // Предусиление перед насыщением — контролируемый «драйв», а не клиппинг
+      const drive = ctx.createGain();
+      drive.gain.value = preset.distortion > 0 ? 1 + preset.distortion * 0.06 : 1;
+
+      const shaper = ctx.createWaveShaper();
+      if (preset.distortion > 0) {
+        shaper.curve = makeDistortionCurve(preset.distortion);
+        shaper.oversample = "4x";
+      }
+      const crusher = ctx.createWaveShaper();
+      if (preset.bitcrusher > 0) {
+        crusher.curve = makeBitcrushCurve(preset.bitcrusher);
+        crusher.oversample = "2x";
+      }
+      // Компенсация громкости после насыщения
+      const postGain = ctx.createGain();
+      postGain.gain.value = preset.distortion > 0 ? 1 / (1 + preset.distortion * 0.05) : 1;
 
       const filter = ctx.createBiquadFilter();
       filter.type = "lowpass";
-      filter.frequency.setValueAtTime(preset.filterFreq, now);
-      filter.Q.value = preset.filterQ;
-
-      const distortion = ctx.createWaveShaper();
-      if (preset.distortion > 0) {
-        distortion.curve = makeDistortionCurve(preset.distortion);
-        distortion.oversample = "4x";
-      }
+      filter.frequency.setValueAtTime(Math.max(freq * 1.5, Math.min(16000, preset.filterFreq)), now);
+      filter.Q.value = Math.min(8, Math.max(0.0001, preset.filterQ));
+      // Убираем «пердёж» — срезаем нижний гул
+      const hp = ctx.createBiquadFilter();
+      hp.type = "highpass";
+      hp.frequency.value = 45;
 
       const gain = ctx.createGain();
-      const peak = preset.volume * (0.5 + Math.min(0.5, n.len / 1600));
+      const peak = Math.min(0.5, preset.volume * (0.5 + Math.min(0.5, n.len / 1600)));
+      const attack = 0.012;
+      const decayEnd = now + dur;
       gain.gain.setValueAtTime(0.0001, now);
-      gain.gain.exponentialRampToValueAtTime(peak, now + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+      gain.gain.exponentialRampToValueAtTime(Math.max(0.001, peak), now + attack);
+      gain.gain.exponentialRampToValueAtTime(Math.max(0.001, peak * 0.6), now + attack + dur * 0.35);
+      gain.gain.exponentialRampToValueAtTime(0.0001, decayEnd);
+      gain.gain.setValueAtTime(0, decayEnd + 0.001);
 
       const pan = ctx.createStereoPanner();
       pan.pan.value = Math.max(-1, Math.min(1, (n.x / Math.max(w, 1)) * 2 - 1));
 
-      let delayNode: DelayNode | null = null;
-      let feedbackNode: GainNode | null = null;
-      if (preset.delayTime > 0 && preset.delayFeedback > 0) {
-        delayNode = ctx.createDelay(1.5);
-        delayNode.delayTime.value = preset.delayTime;
-        feedbackNode = ctx.createGain();
-        feedbackNode.gain.value = preset.delayFeedback;
-        delayNode.connect(feedbackNode);
-        feedbackNode.connect(delayNode);
-      }
-
-      sourceNode.connect(filter);
-      if (preset.distortion > 0) {
-        filter.connect(distortion);
-        distortion.connect(gain);
-      } else {
-        filter.connect(gain);
-      }
+      // Цепочка: источник → драйв → сатурация → биткраш → фильтры → огибающая → панорама
+      sourceNode.connect(drive);
+      let node: AudioNode = drive;
+      if (preset.distortion > 0) { node.connect(shaper); node = shaper; }
+      if (preset.bitcrusher > 0) { node.connect(crusher); node = crusher; }
+      node.connect(postGain);
+      postGain.connect(filter);
+      filter.connect(hp);
+      hp.connect(gain);
       gain.connect(pan);
       pan.connect(master);
 
-      if (delayNode && feedbackNode) {
+      let delayNode: DelayNode | null = null;
+      let wet: GainNode | null = null;
+      if (preset.delayTime > 0 && preset.delayFeedback > 0) {
+        delayNode = ctx.createDelay(1.5);
+        delayNode.delayTime.value = Math.min(1.2, preset.delayTime);
+        const fb = ctx.createGain();
+        fb.gain.value = Math.min(0.55, preset.delayFeedback);
+        // Демпфирование повторов, чтобы эхо не превращалось в кашу
+        const damp = ctx.createBiquadFilter();
+        damp.type = "lowpass";
+        damp.frequency.value = 2500;
+        wet = ctx.createGain();
+        wet.gain.value = 0.3;
         gain.connect(delayNode);
-        delayNode.connect(master);
+        delayNode.connect(damp);
+        damp.connect(fb);
+        fb.connect(delayNode);
+        delayNode.connect(wet);
+        wet.connect(master);
       }
+
+      // Освобождаем узлы — иначе эхо и фильтры копятся и превращаются в грязь
+      const cleanupIn = (tail + (delayNode ? 2.5 : 0.2)) * 1000;
+      window.setTimeout(() => {
+        for (const nd of [sourceNode, drive, shaper, crusher, postGain, filter, hp, gain, pan, delayNode, wet]) {
+          try { nd?.disconnect(); } catch { /* noop */ }
+        }
+      }, cleanupIn);
 
       if (!silentLabel)
         setLast(`${NOTE_NAMES[(3 + semitone) % 12]} · ${dur.toFixed(2)} с · ${preset.name}`);
